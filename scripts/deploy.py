@@ -1,0 +1,542 @@
+"""
+KPMG Agents — Generic Deployment Script
+
+Deploys one or more agents to Agent Engine and registers them in Gemini Enterprise.
+All agent configuration is read from YAML files in config/.
+
+Usage:
+    # Deploy a single agent
+    python scripts/deploy.py employee_verification
+
+    # Deploy multiple specific agents
+    python scripts/deploy.py employee_verification benefits_enrollment
+
+    # Deploy ALL agents (every YAML in config/)
+    python scripts/deploy.py --all
+
+    # List available agents
+    python scripts/deploy.py --list
+
+    # Dry run — show what would be deployed
+    python scripts/deploy.py employee_verification --dry-run
+
+    # Undeploy an agent from Agent Engine
+    python scripts/deploy.py employee_verification --undeploy
+"""
+
+import argparse
+import importlib
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+import httpx
+import requests
+import vertexai
+from a2a.types import AgentSkill
+from dotenv import load_dotenv
+from google.auth import default
+from google.auth.transport.requests import Request
+from google.genai import types
+from vertexai.preview.reasoning_engines import A2aAgent
+from vertexai.preview.reasoning_engines.templates.a2a import create_agent_card
+
+# Add project root to sys.path so we can import agents/tools
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from agents._base.config_loader import load_agent_config, list_available_agents
+
+
+# =============================================================================
+# Helpers
+# =============================================================================
+
+def _get_bearer_token() -> str | None:
+    """Gets a bearer token for authenticating with Google Cloud."""
+    try:
+        credentials, _ = default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+        request = Request()
+        credentials.refresh(request)
+        return credentials.token
+    except Exception as e:
+        print(f"  ✗ Error getting credentials: {e}")
+        print("    Please run: gcloud auth application-default login")
+        return None
+
+
+def _register_agent_on_gemini_enterprise(
+    project_id: str,
+    app_id: str,
+    agent_card: str,
+    agent_name: str,
+    display_name: str,
+    description: str,
+    agent_authorization: str | None = None,
+) -> dict | None:
+    """Register an Agent Engine agent in Gemini Enterprise."""
+    api_endpoint = (
+        f"https://discoveryengine.googleapis.com/v1alpha/projects/{project_id}/"
+        f"locations/global/collections/default_collection/engines/{app_id}/"
+        "assistants/default_assistant/agents"
+    )
+
+    payload = {
+        "name": agent_name,
+        "displayName": display_name,
+        "description": description,
+        "a2aAgentDefinition": {"jsonAgentCard": agent_card},
+    }
+
+    if agent_authorization:
+        payload["authorization_config"] = {"agent_authorization": agent_authorization}
+
+    bearer_token = _get_bearer_token()
+    if not bearer_token:
+        return None
+
+    headers = {
+        "Authorization": f"Bearer {bearer_token}",
+        "Content-Type": "application/json",
+        "X-Goog-User-Project": project_id,
+    }
+
+    response = requests.post(api_endpoint, headers=headers, json=payload)
+
+    if response.status_code == 200:
+        return response.json()
+    print(f"  ✗ Registration failed (HTTP {response.status_code}): {response.text}")
+    return None
+
+
+def _unregister_agent_from_gemini_enterprise(
+    project_id: str,
+    app_id: str,
+    agent_name: str,
+) -> bool:
+    """Unregister an agent from Gemini Enterprise."""
+    api_endpoint = (
+        f"https://discoveryengine.googleapis.com/v1alpha/projects/{project_id}/"
+        f"locations/global/collections/default_collection/engines/{app_id}/"
+        f"assistants/default_assistant/agents/{agent_name}"
+    )
+
+    bearer_token = _get_bearer_token()
+    if not bearer_token:
+        return False
+
+    headers = {
+        "Authorization": f"Bearer {bearer_token}",
+        "Content-Type": "application/json",
+        "X-Goog-User-Project": project_id,
+    }
+
+    response = requests.delete(api_endpoint, headers=headers)
+    return response.status_code in (200, 204, 404)
+
+
+# =============================================================================
+# Deploy / Undeploy a single agent
+# =============================================================================
+
+def deploy_agent(agent_name: str, dry_run: bool = False) -> bool:
+    """Deploy a single agent to Agent Engine and register in Gemini Enterprise.
+
+    Args:
+        agent_name: Name matching config/<agent_name>.yaml
+        dry_run: If True, just print config without deploying.
+
+    Returns:
+        True if successful, False otherwise.
+    """
+    # Load config
+    try:
+        config = load_agent_config(agent_name)
+    except FileNotFoundError as e:
+        print(f"  ✗ {e}")
+        return False
+
+    agent_cfg = config.get("agent", {})
+    deploy_cfg = config.get("deploy", {})
+
+    model = agent_cfg.get("model", os.environ.get("GOOGLE_GENAI_MODEL", "gemini-2.5-flash"))
+    display_name = agent_cfg.get("display_name", agent_name)
+    description = agent_cfg.get("description", "")
+    tool_paths = agent_cfg.get("tools", [])
+    skills_cfg = deploy_cfg.get("skills", [])
+
+    # Environment
+    project_id = os.environ.get("PROJECT_ID")
+    location = deploy_cfg.get("region", os.environ.get("LOCATION", "us-central1"))
+    storage = os.environ.get("STORAGE_BUCKET")
+    app_id = os.environ.get("GEMINI_ENTERPRISE_APP_ID")
+    api_endpoint = f"{location}-aiplatform.googleapis.com"
+    api_version = deploy_cfg.get("api_version", "v1beta1")
+
+    print(f"  ├── Model: {model}")
+    print(f"  ├── Tools: {len(tool_paths)} tools")
+    print(f"  ├── Skills: {len(skills_cfg)} skills defined")
+
+    if dry_run:
+        print(f"  ├── Region: {location}")
+        print(f"  ├── Display Name: {display_name}")
+        print(f"  ├── Description: {description[:80]}...")
+        print(f"  ├── Tool paths:")
+        for tp in tool_paths:
+            print(f"  │   - {tp}")
+        print(f"  ├── Skills:")
+        for s in skills_cfg:
+            print(f"  │   - {s.get('name', s.get('id', '?'))}")
+        print(f"  └── 🔍 DRY RUN — nothing deployed")
+        return True
+
+    # Initialize Vertex AI
+    vertexai.init(
+        project=project_id,
+        location=location,
+        api_endpoint=api_endpoint,
+        staging_bucket=storage,
+    )
+
+    client = vertexai.Client(
+        project=project_id,
+        location=location,
+        http_options=types.HttpOptions(api_version=api_version),
+    )
+
+    # Build skills from config
+    skills = []
+    for skill_def in skills_cfg:
+        skills.append(AgentSkill(
+            id=skill_def.get("id", ""),
+            name=skill_def.get("name", ""),
+            description=skill_def.get("description", ""),
+            tags=skill_def.get("tags", []),
+            examples=skill_def.get("examples", []),
+        ))
+
+    # Default I/O modes
+    defaults = config.get("deploy", {})
+    input_modes = defaults.get("default_input_modes", ["text/plain"])
+    output_modes = defaults.get("default_output_modes", ["text/plain"])
+
+    # Create agent card
+    agent_card = create_agent_card(
+        agent_name=display_name,
+        description=description,
+        skills=skills,
+        default_input_modes=input_modes,
+        default_output_modes=output_modes,
+    )
+
+    # Dynamically import the executor class
+    executor_module_path = f"agents.{agent_name}.executor"
+    try:
+        executor_module = importlib.import_module(executor_module_path)
+    except ImportError as e:
+        print(f"  ✗ Could not import executor from {executor_module_path}: {e}")
+        return False
+
+    # Find the executor class (first subclass of AgentExecutor in the module)
+    executor_class = None
+    for attr_name in dir(executor_module):
+        attr = getattr(executor_module, attr_name)
+        if (
+            isinstance(attr, type)
+            and hasattr(attr, "AGENT_CONFIG_NAME")
+            and attr_name != "BaseA2UIExecutor"
+        ):
+            executor_class = attr
+            break
+
+    if executor_class is None:
+        print(f"  ✗ No executor class found in {executor_module_path}")
+        return False
+
+    # Create A2aAgent
+    a2a_agent = A2aAgent(
+        agent_card=agent_card,
+        agent_executor_builder=executor_class,
+    )
+    a2a_agent.set_up()
+
+    # Build requirements
+    base_reqs = config.get("deploy", {}).get("base_requirements", [])
+    extra_reqs = deploy_cfg.get("extra_requirements", [])
+    all_requirements = base_reqs + extra_reqs
+
+    # Build extra packages
+    extra_packages = deploy_cfg.get("extra_packages", [])
+
+    # Build env vars
+    env_vars = deploy_cfg.get("env_vars", {})
+    env_vars["PROJECT_ID"] = project_id
+
+    # Deploy config
+    deploy_config = {
+        "display_name": f"{agent_name}_agent",
+        "description": description,
+        "agent_framework": deploy_cfg.get("agent_framework", "google-adk"),
+        "staging_bucket": storage,
+        "gcs_dir_name": agent_name,
+        "requirements": all_requirements,
+        "http_options": {"api_version": api_version},
+        "max_instances": deploy_cfg.get("max_instances", 1),
+        "extra_packages": extra_packages,
+        "env_vars": env_vars,
+    }
+
+    print(f"  ⏳ Deploying to Agent Engine...")
+    start_time = time.time()
+
+    try:
+        remote_agent = client.agent_engines.create(agent=a2a_agent, config=deploy_config)
+    except Exception as e:
+        print(f"  ✗ Deployment failed: {e}")
+        return False
+
+    elapsed = time.time() - start_time
+    remote_engine_resource = remote_agent.api_resource.name
+    print(f"  ✓ Deployed: {remote_engine_resource} ({elapsed:.0f}s)")
+
+    # Fetch A2A card from deployed agent
+    a2a_endpoint = f"https://{api_endpoint}/{api_version}/{remote_engine_resource}/a2a/v1/card"
+    bearer_token = _get_bearer_token()
+    if not bearer_token:
+        print(f"  ✗ Could not get bearer token for card fetch")
+        return False
+
+    headers = {
+        "Authorization": f"Bearer {bearer_token}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        response = httpx.get(a2a_endpoint, headers=headers)
+        response.raise_for_status()
+        a2ui_agent_card_json = response.json()
+    except Exception as e:
+        print(f"  ✗ Could not fetch A2A card: {e}")
+        return False
+
+    # Add A2UI capabilities
+    a2ui_cfg = agent_cfg.get("a2ui", {})
+    extension_uri = a2ui_cfg.get(
+        "extension_uri", "https://a2ui.org/a2a-extension/a2ui/v0.8"
+    )
+    catalog_url = a2ui_cfg.get(
+        "catalog_url",
+        "https://a2ui.org/specification/v0_8/standard_catalog_definition.json",
+    )
+
+    a2ui_agent_card_json["capabilities"] = {
+        "streaming": False,
+        "extensions": [{
+            "uri": extension_uri,
+            "description": "Ability to render A2UI",
+            "required": False,
+            "params": {
+                "supportedCatalogIds": [catalog_url]
+            },
+        }],
+    }
+    a2ui_agent_card_str = json.dumps(a2ui_agent_card_json)
+
+    # Register in Gemini Enterprise
+    # Per-agent authorization takes priority over the global env var
+    agent_authorization = deploy_cfg.get("agent_authorization") or os.environ.get("AGENT_AUTHORIZATION")
+    result = _register_agent_on_gemini_enterprise(
+        project_id=project_id,
+        app_id=app_id,
+        agent_card=a2ui_agent_card_str,
+        agent_name=f"{agent_name}_agent",
+        display_name=display_name,
+        description=description,
+        agent_authorization=agent_authorization,
+    )
+
+    if result:
+        print(f"  ✓ Registered in Gemini Enterprise")
+    else:
+        print(f"  ⚠ Agent deployed but GE registration failed")
+
+    return True
+
+
+def undeploy_agent(agent_name: str) -> bool:
+    """Undeploy an agent from Agent Engine and unregister from Gemini Enterprise.
+
+    Note: This unregisters from GE. To fully remove the Agent Engine resource,
+    you would need the resource name. Use `gcloud` or the console for that.
+
+    Args:
+        agent_name: Name matching config/<agent_name>.yaml
+
+    Returns:
+        True if successful, False otherwise.
+    """
+    project_id = os.environ.get("PROJECT_ID")
+    app_id = os.environ.get("GEMINI_ENTERPRISE_APP_ID")
+
+    print(f"  ⏳ Unregistering from Gemini Enterprise...")
+
+    success = _unregister_agent_from_gemini_enterprise(
+        project_id=project_id,
+        app_id=app_id,
+        agent_name=f"{agent_name}_agent",
+    )
+
+    if success:
+        print(f"  ✓ Unregistered from Gemini Enterprise")
+        print(f"  ℹ To delete the Agent Engine resource, use:")
+        print(f"    gcloud ai reasoning-engines list --region=us-central1")
+        print(f"    gcloud ai reasoning-engines delete <RESOURCE_ID> --region=us-central1")
+    else:
+        print(f"  ✗ Failed to unregister from Gemini Enterprise")
+
+    return success
+
+
+# =============================================================================
+# CLI
+# =============================================================================
+
+def main():
+    load_dotenv(os.path.join(_PROJECT_ROOT, ".env"))
+
+    parser = argparse.ArgumentParser(
+        description="KPMG Agents — Deploy agents to Agent Engine + Gemini Enterprise",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python scripts/deploy.py employee_verification          # Deploy one agent
+  python scripts/deploy.py agent1 agent2 agent3           # Deploy multiple
+  python scripts/deploy.py --all                          # Deploy all agents
+  python scripts/deploy.py --list                         # List available agents
+  python scripts/deploy.py employee_verification --dry-run  # Preview config
+  python scripts/deploy.py employee_verification --undeploy # Undeploy agent
+        """,
+    )
+
+    parser.add_argument(
+        "agents",
+        nargs="*",
+        help="Agent name(s) to deploy (matches config/<name>.yaml)",
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Deploy all agents found in config/",
+    )
+    parser.add_argument(
+        "--list",
+        action="store_true",
+        help="List available agents and exit",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be deployed without actually deploying",
+    )
+    parser.add_argument(
+        "--undeploy",
+        action="store_true",
+        help="Undeploy the specified agent(s) instead of deploying",
+    )
+
+    args = parser.parse_args()
+
+    # --list: show available agents and exit
+    if args.list:
+        available = list_available_agents()
+        print("=" * 60)
+        print("  KPMG Agents — Available Agents")
+        print("=" * 60)
+        if not available:
+            print("  No agent configs found in config/")
+        else:
+            for name in available:
+                try:
+                    cfg = load_agent_config(name)
+                    display = cfg.get("agent", {}).get("display_name", name)
+                    model = cfg.get("agent", {}).get("model", "default")
+                    tools = len(cfg.get("agent", {}).get("tools", []))
+                    skills = len(cfg.get("deploy", {}).get("skills", []))
+                    print(f"  • {name}")
+                    print(f"    Display: {display}")
+                    print(f"    Model: {model} | Tools: {tools} | Skills: {skills}")
+                except Exception as e:
+                    print(f"  • {name} (error loading config: {e})")
+        print("=" * 60)
+        return
+
+    # Determine which agents to process
+    if args.all:
+        agent_names = list_available_agents()
+        if not agent_names:
+            print("✗ No agent configs found in config/")
+            sys.exit(1)
+    elif args.agents:
+        agent_names = args.agents
+    else:
+        parser.print_help()
+        sys.exit(1)
+
+    # Validate all agent names first
+    available = list_available_agents()
+    invalid = [name for name in agent_names if name not in available]
+    if invalid:
+        print(f"✗ Unknown agent(s): {', '.join(invalid)}")
+        print(f"  Available: {', '.join(available)}")
+        sys.exit(1)
+
+    # Header
+    project_id = os.environ.get("PROJECT_ID", "?")
+    location = os.environ.get("LOCATION", "us-central1")
+    action = "Undeploy" if args.undeploy else ("Dry Run" if args.dry_run else "Deployment")
+
+    print()
+    print("=" * 80)
+    print(f"  KPMG Agents — {action}")
+    print(f"  Project: {project_id} | Region: {location}")
+    print("=" * 80)
+    print()
+
+    # Process each agent
+    results = {}
+    total = len(agent_names)
+
+    for idx, agent_name in enumerate(agent_names, 1):
+        print(f"[{idx}/{total}] {'Undeploying' if args.undeploy else 'Deploying'}: {agent_name}")
+
+        if args.undeploy:
+            success = undeploy_agent(agent_name)
+        else:
+            success = deploy_agent(agent_name, dry_run=args.dry_run)
+
+        results[agent_name] = success
+        print()
+
+    # Summary
+    succeeded = sum(1 for v in results.values() if v)
+    failed = total - succeeded
+
+    print("=" * 80)
+    if failed == 0:
+        print(f"  ✓ {succeeded}/{total} agents {'processed' if args.dry_run else 'completed'} successfully")
+    else:
+        print(f"  ⚠ {succeeded}/{total} succeeded, {failed}/{total} failed")
+        for name, success in results.items():
+            status = "✓" if success else "✗"
+            print(f"    {status} {name}")
+    print("=" * 80)
+
+    if failed > 0:
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
