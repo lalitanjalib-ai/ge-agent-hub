@@ -139,8 +139,10 @@ deploy:
     - "tools"
     - "config"
 
-  # Gemini Enterprise authorization resource for this agent (one per agent)
-  agent_authorization: "projects/445897182778/locations/global/authorizations/agent-auth-v2"
+  # Gemini Enterprise authorization resource for this agent.
+  # Set AGENT_AUTHORIZATION in your .env file instead of hardcoding it here.
+  # Create one with: curl -X POST "https://<GE_LOCATION>-discoveryengine.googleapis.com/v1alpha/..."
+  # See .env.example for details.
 
   # Environment variables for the deployed agent
   env_vars:

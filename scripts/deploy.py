@@ -1,5 +1,5 @@
 """
-KPMG Agents — Generic Deployment Script
+Agent Framework — Generic Deployment Script
 
 Deploys one or more agents to Agent Engine and registers them in Gemini Enterprise.
 All agent configuration is read from YAML files in config/.
@@ -50,6 +50,14 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from agents._base.config_loader import load_agent_config, list_available_agents
 
+# Import setup_agent_auth helpers inline to avoid circular imports
+from scripts.setup_agent_auth import (
+    _get_project_number,
+    _check_auth_exists,
+    _create_auth,
+    _update_env_file,
+)
+
 
 # =============================================================================
 # Helpers
@@ -68,6 +76,20 @@ def _get_bearer_token() -> str | None:
         return None
 
 
+def _get_de_hostname(ge_location: str) -> str:
+    """Return the correct Discovery Engine API hostname for the given GE location.
+
+    Args:
+        ge_location: The Gemini Enterprise region ('global', 'us', 'eu', etc.)
+
+    Returns:
+        The correct API hostname string.
+    """
+    if ge_location == "global":
+        return "discoveryengine.googleapis.com"
+    return f"{ge_location}-discoveryengine.googleapis.com"
+
+
 def _register_agent_on_gemini_enterprise(
     project_id: str,
     app_id: str,
@@ -76,11 +98,13 @@ def _register_agent_on_gemini_enterprise(
     display_name: str,
     description: str,
     agent_authorization: str | None = None,
+    ge_location: str = "global",
 ) -> dict | None:
     """Register an Agent Engine agent in Gemini Enterprise."""
+    de_hostname = _get_de_hostname(ge_location)
     api_endpoint = (
-        f"https://discoveryengine.googleapis.com/v1alpha/projects/{project_id}/"
-        f"locations/global/collections/default_collection/engines/{app_id}/"
+        f"https://{de_hostname}/v1alpha/projects/{project_id}/"
+        f"locations/{ge_location}/collections/default_collection/engines/{app_id}/"
         "assistants/default_assistant/agents"
     )
 
@@ -108,6 +132,18 @@ def _register_agent_on_gemini_enterprise(
 
     if response.status_code == 200:
         return response.json()
+
+    # If the authorization resource is already used by another agent, retry without it.
+    # This happens when the same OAuth client was used to create multiple auth resources
+    # and one is already bound to a different agent in GE.
+    if response.status_code == 400 and "is used by another agent" in response.text and agent_authorization:
+        print(f"  ⚠ Authorization resource already in use — retrying without authorization_config...")
+        payload.pop("authorization_config", None)
+        response = requests.post(api_endpoint, headers=headers, json=payload)
+        if response.status_code == 200:
+            print(f"  ℹ Registered without OAuth authorization. Users will need to authenticate separately.")
+            return response.json()
+
     print(f"  ✗ Registration failed (HTTP {response.status_code}): {response.text}")
     return None
 
@@ -116,11 +152,13 @@ def _unregister_agent_from_gemini_enterprise(
     project_id: str,
     app_id: str,
     agent_name: str,
+    ge_location: str = "global",
 ) -> bool:
     """Unregister an agent from Gemini Enterprise."""
+    de_hostname = _get_de_hostname(ge_location)
     api_endpoint = (
-        f"https://discoveryengine.googleapis.com/v1alpha/projects/{project_id}/"
-        f"locations/global/collections/default_collection/engines/{app_id}/"
+        f"https://{de_hostname}/v1alpha/projects/{project_id}/"
+        f"locations/{ge_location}/collections/default_collection/engines/{app_id}/"
         f"assistants/default_assistant/agents/{agent_name}"
     )
 
@@ -345,9 +383,64 @@ def deploy_agent(agent_name: str, dry_run: bool = False) -> bool:
     }
     a2ui_agent_card_str = json.dumps(a2ui_agent_card_json)
 
+    # -------------------------------------------------------------------------
+    # Resolve per-agent authorization resource
+    # -------------------------------------------------------------------------
+    ge_location = os.environ.get("GE_LOCATION", "global")
+    agent_authorization = None
+
+    # Check for per-agent auth ID in config (preferred pattern)
+    auth_id = deploy_cfg.get("agent_authorization_id")
+    if auth_id:
+        oauth_client_id = os.environ.get("OAUTH_CLIENT_ID")
+        oauth_client_secret = os.environ.get("OAUTH_CLIENT_SECRET")
+        project_number = _get_project_number(project_id)
+
+        if project_number and oauth_client_id and oauth_client_secret:
+            existing = _check_auth_exists(project_number, ge_location, auth_id, project_id)
+            if existing:
+                agent_authorization = existing.get(
+                    "name",
+                    f"projects/{project_number}/locations/{ge_location}/authorizations/{auth_id}"
+                )
+                print(f"  ✓ Auth resource exists: {agent_authorization}")
+            else:
+                print(f"  ⏳ Creating auth resource '{auth_id}'...")
+                result_auth = _create_auth(
+                    project_number=project_number,
+                    ge_location=ge_location,
+                    auth_id=auth_id,
+                    project_id=project_id,
+                    oauth_client_id=oauth_client_id,
+                    oauth_client_secret=oauth_client_secret,
+                )
+                if result_auth:
+                    agent_authorization = result_auth.get(
+                        "name",
+                        f"projects/{project_number}/locations/{ge_location}/authorizations/{auth_id}"
+                    )
+                    print(f"  ✓ Created auth resource: {agent_authorization}")
+                else:
+                    print(f"  ⚠ Could not create auth resource '{auth_id}' — will register without OAuth")
+        else:
+            print(f"  ⚠ Missing OAUTH_CLIENT_ID/SECRET or project number — skipping auth resource creation")
+    else:
+        # Fallback to global AGENT_AUTHORIZATION env var
+        agent_authorization = os.environ.get("AGENT_AUTHORIZATION")
+
+    # -------------------------------------------------------------------------
+    # Delete any existing GE registration for this agent before re-registering
+    # This ensures we always register with the correct (latest) auth resource
+    # -------------------------------------------------------------------------
+    print(f"  ⏳ Removing any existing GE registration for '{agent_name}_agent'...")
+    _unregister_agent_from_gemini_enterprise(
+        project_id=project_id,
+        app_id=app_id,
+        agent_name=f"{agent_name}_agent",
+        ge_location=ge_location,
+    )
+
     # Register in Gemini Enterprise
-    # Per-agent authorization takes priority over the global env var
-    agent_authorization = deploy_cfg.get("agent_authorization") or os.environ.get("AGENT_AUTHORIZATION")
     result = _register_agent_on_gemini_enterprise(
         project_id=project_id,
         app_id=app_id,
@@ -356,6 +449,7 @@ def deploy_agent(agent_name: str, dry_run: bool = False) -> bool:
         display_name=display_name,
         description=description,
         agent_authorization=agent_authorization,
+        ge_location=ge_location,
     )
 
     if result:
@@ -383,10 +477,12 @@ def undeploy_agent(agent_name: str) -> bool:
 
     print(f"  ⏳ Unregistering from Gemini Enterprise...")
 
+    ge_location = os.environ.get("GE_LOCATION", "global")
     success = _unregister_agent_from_gemini_enterprise(
         project_id=project_id,
         app_id=app_id,
         agent_name=f"{agent_name}_agent",
+        ge_location=ge_location,
     )
 
     if success:
@@ -408,7 +504,7 @@ def main():
     load_dotenv(os.path.join(_PROJECT_ROOT, ".env"))
 
     parser = argparse.ArgumentParser(
-        description="KPMG Agents — Deploy agents to Agent Engine + Gemini Enterprise",
+        description="Agent Framework — Deploy agents to Agent Engine + Gemini Enterprise",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -453,7 +549,7 @@ Examples:
     if args.list:
         available = list_available_agents()
         print("=" * 60)
-        print("  KPMG Agents — Available Agents")
+        print("  Agent Framework — Available Agents")
         print("=" * 60)
         if not available:
             print("  No agent configs found in config/")
@@ -496,14 +592,31 @@ Examples:
     # Header
     project_id = os.environ.get("PROJECT_ID", "?")
     location = os.environ.get("LOCATION", "us-central1")
+    ge_location = os.environ.get("GE_LOCATION", "global")
     action = "Undeploy" if args.undeploy else ("Dry Run" if args.dry_run else "Deployment")
 
     print()
     print("=" * 80)
-    print(f"  KPMG Agents — {action}")
+    print(f"  Agent Framework — {action}")
     print(f"  Project: {project_id} | Region: {location}")
     print("=" * 80)
     print()
+
+    # -------------------------------------------------------------------------
+    # Step 0: Resolve project number (needed for per-agent auth resource creation)
+    # -------------------------------------------------------------------------
+    _project_number = None
+    if not args.undeploy and not args.dry_run:
+        oauth_client_id = os.environ.get("OAUTH_CLIENT_ID")
+        oauth_client_secret = os.environ.get("OAUTH_CLIENT_SECRET")
+        if oauth_client_id and oauth_client_secret:
+            print("  ⏳ Step 0: Resolving project number for auth resource management...")
+            _project_number = _get_project_number(project_id)
+            if _project_number:
+                print(f"  ✓ Project number: {_project_number}")
+            else:
+                print(f"  ⚠ Could not resolve project number — per-agent auth creation will be skipped.")
+            print()
 
     # Process each agent
     results = {}

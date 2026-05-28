@@ -1,5 +1,5 @@
 """
-KPMG Agents — Undeploy Script
+Agent Framework — Undeploy Script
 
 Removes agents from Gemini Enterprise and provides guidance for Agent Engine cleanup.
 
@@ -47,11 +47,19 @@ def _get_bearer_token() -> str | None:
         return None
 
 
-def _list_ge_agents(project_id: str, app_id: str) -> list[dict]:
+def _get_de_hostname(ge_location: str) -> str:
+    """Return the correct Discovery Engine API hostname for the given GE location."""
+    if ge_location == "global":
+        return "discoveryengine.googleapis.com"
+    return f"{ge_location}-discoveryengine.googleapis.com"
+
+
+def _list_ge_agents(project_id: str, app_id: str, ge_location: str = "global") -> list[dict]:
     """List agents registered in Gemini Enterprise."""
+    de_hostname = _get_de_hostname(ge_location)
     api_endpoint = (
-        f"https://discoveryengine.googleapis.com/v1alpha/projects/{project_id}/"
-        f"locations/global/collections/default_collection/engines/{app_id}/"
+        f"https://{de_hostname}/v1alpha/projects/{project_id}/"
+        f"locations/{ge_location}/collections/default_collection/engines/{app_id}/"
         "assistants/default_assistant/agents"
     )
 
@@ -71,11 +79,12 @@ def _list_ge_agents(project_id: str, app_id: str) -> list[dict]:
     return []
 
 
-def _unregister_agent(project_id: str, app_id: str, agent_name: str) -> bool:
+def _unregister_agent(project_id: str, app_id: str, agent_name: str, ge_location: str = "global") -> bool:
     """Unregister an agent from Gemini Enterprise."""
+    de_hostname = _get_de_hostname(ge_location)
     api_endpoint = (
-        f"https://discoveryengine.googleapis.com/v1alpha/projects/{project_id}/"
-        f"locations/global/collections/default_collection/engines/{app_id}/"
+        f"https://{de_hostname}/v1alpha/projects/{project_id}/"
+        f"locations/{ge_location}/collections/default_collection/engines/{app_id}/"
         f"assistants/default_assistant/agents/{agent_name}"
     )
 
@@ -93,7 +102,7 @@ def _unregister_agent(project_id: str, app_id: str, agent_name: str) -> bool:
     return response.status_code in (200, 204, 404)
 
 
-def undeploy_agent(agent_name: str, project_id: str, app_id: str, location: str) -> bool:
+def undeploy_agent(agent_name: str, project_id: str, app_id: str, location: str, ge_location: str = "global") -> bool:
     """Undeploy a single agent."""
     print(f"  ⏳ Unregistering '{agent_name}_agent' from Gemini Enterprise...")
 
@@ -101,6 +110,7 @@ def undeploy_agent(agent_name: str, project_id: str, app_id: str, location: str)
         project_id=project_id,
         app_id=app_id,
         agent_name=f"{agent_name}_agent",
+        ge_location=ge_location,
     )
 
     if success:
@@ -120,7 +130,7 @@ def main():
     load_dotenv(os.path.join(_PROJECT_ROOT, ".env"))
 
     parser = argparse.ArgumentParser(
-        description="KPMG Agents — Undeploy agents from Gemini Enterprise",
+        description="Agent Framework — Undeploy agents from Gemini Enterprise",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -156,7 +166,7 @@ Examples:
     # --list: show registered agents
     if args.list:
         print("=" * 60)
-        print("  KPMG Agents — Registered in Gemini Enterprise")
+        print("  Agent Framework — Registered in Gemini Enterprise")
         print("=" * 60)
         agents = _list_ge_agents(project_id, app_id)
         if not agents:
@@ -184,7 +194,7 @@ Examples:
     # Header
     print()
     print("=" * 80)
-    print(f"  KPMG Agents — Undeploy")
+    print(f"  Agent Framework — Undeploy")
     print(f"  Project: {project_id} | Region: {location}")
     print("=" * 80)
     print()
@@ -193,9 +203,11 @@ Examples:
     results = {}
     total = len(agent_names)
 
+    ge_location = os.environ.get("GE_LOCATION", "global")
+
     for idx, agent_name in enumerate(agent_names, 1):
         print(f"[{idx}/{total}] Undeploying: {agent_name}")
-        success = undeploy_agent(agent_name, project_id, app_id, location)
+        success = undeploy_agent(agent_name, project_id, app_id, location, ge_location=ge_location)
         results[agent_name] = success
         print()
 

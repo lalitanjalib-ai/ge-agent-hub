@@ -133,12 +133,15 @@ deploy:
 
   # Extra packages to upload to Agent Engine
   extra_packages:
-    - "agents/employee_verification"
+    - "agents"
     - "tools"
     - "config"
 
-  # Gemini Enterprise authorization resource for this agent (one per agent)
-  agent_authorization: "projects/445897182778/locations/global/authorizations/agent-auth-v1"
+  # Stable per-agent authorization resource ID for Gemini Enterprise OAuth.
+  # This ID is reused across every redeploy of this agent — do NOT change it.
+  # The deploy script will create this resource automatically if it doesn't exist.
+  # One auth resource per agent type is the correct pattern.
+  agent_authorization_id: "auth-employee-verification"
 
   # Environment variables for the deployed agent
   env_vars:
