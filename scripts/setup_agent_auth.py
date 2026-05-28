@@ -41,6 +41,27 @@ from dotenv import load_dotenv
 from google.auth import default
 from google.auth.transport.requests import Request
 
+# =============================================================================
+# SSL / Certificate handling
+# =============================================================================
+# On Windows corporate machines with a custom CA (e.g. Zscaler, Netskope),
+# Python's requests library may fail with CERTIFICATE_VERIFY_FAILED.
+# Set REQUESTS_CA_BUNDLE in your .env to the path of your corporate CA bundle,
+# or set SSL_VERIFY=false to disable verification (not recommended for production).
+_SSL_VERIFY: bool | str = True
+_ssl_verify_env = os.environ.get("SSL_VERIFY", "").strip().lower()
+if _ssl_verify_env in ("false", "0", "no"):
+    _SSL_VERIFY = False
+elif _ssl_verify_env:
+    _SSL_VERIFY = _ssl_verify_env  # treat as path to CA bundle
+elif os.environ.get("REQUESTS_CA_BUNDLE"):
+    _SSL_VERIFY = os.environ.get("REQUESTS_CA_BUNDLE")
+
+# Authorization resources are ALWAYS in the global Discovery Engine location,
+# regardless of where the Gemini Enterprise app is provisioned.
+_AUTH_LOCATION = "global"
+_AUTH_DE_HOSTNAME = "discoveryengine.googleapis.com"
+
 # Add project root to sys.path
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
@@ -79,7 +100,7 @@ def _get_project_number(project_id: str) -> str | None:
 
     url = f"https://cloudresourcemanager.googleapis.com/v1/projects/{project_id}"
     headers = {"Authorization": f"Bearer {bearer_token}"}
-    response = requests.get(url, headers=headers)
+    response = requests.get(url, headers=headers, verify=_SSL_VERIFY)
 
     if response.status_code == 200:
         return response.json().get("projectNumber")
@@ -89,15 +110,19 @@ def _get_project_number(project_id: str) -> str | None:
 
 def _check_auth_exists(
     project_number: str,
-    ge_location: str,
+    ge_location: str,  # kept for API compatibility but auth is always global
     auth_id: str,
     project_id: str,
 ) -> dict | None:
-    """Check if an authorization resource already exists. Returns the resource dict or None."""
-    de_hostname = _get_de_hostname(ge_location)
+    """Check if an authorization resource already exists. Returns the resource dict or None.
+
+    Note: Authorization resources are always in the global Discovery Engine location,
+    regardless of where the Gemini Enterprise app is provisioned.
+    """
+    # Auth resources are always global — ignore ge_location for the auth API
     url = (
-        f"https://{de_hostname}/v1alpha/projects/{project_number}/"
-        f"locations/{ge_location}/authorizations/{auth_id}"
+        f"https://{_AUTH_DE_HOSTNAME}/v1alpha/projects/{project_number}/"
+        f"locations/{_AUTH_LOCATION}/authorizations/{auth_id}"
     )
 
     bearer_token = _get_bearer_token()
@@ -109,7 +134,7 @@ def _check_auth_exists(
         "X-Goog-User-Project": project_id,
     }
 
-    response = requests.get(url, headers=headers)
+    response = requests.get(url, headers=headers, verify=_SSL_VERIFY)
     if response.status_code == 200:
         return response.json()
     return None
@@ -117,15 +142,18 @@ def _check_auth_exists(
 
 def _delete_auth(
     project_number: str,
-    ge_location: str,
+    ge_location: str,  # kept for API compatibility but auth is always global
     auth_id: str,
     project_id: str,
 ) -> bool:
-    """Delete an existing authorization resource."""
-    de_hostname = _get_de_hostname(ge_location)
+    """Delete an existing authorization resource.
+
+    Note: Authorization resources are always in the global Discovery Engine location.
+    """
+    # Auth resources are always global
     url = (
-        f"https://{de_hostname}/v1alpha/projects/{project_number}/"
-        f"locations/{ge_location}/authorizations/{auth_id}"
+        f"https://{_AUTH_DE_HOSTNAME}/v1alpha/projects/{project_number}/"
+        f"locations/{_AUTH_LOCATION}/authorizations/{auth_id}"
     )
 
     bearer_token = _get_bearer_token()
@@ -137,23 +165,27 @@ def _delete_auth(
         "X-Goog-User-Project": project_id,
     }
 
-    response = requests.delete(url, headers=headers)
+    response = requests.delete(url, headers=headers, verify=_SSL_VERIFY)
     return response.status_code in (200, 204, 404)
 
 
 def _create_auth(
     project_number: str,
-    ge_location: str,
+    ge_location: str,  # kept for API compatibility but auth is always global
     auth_id: str,
     project_id: str,
     oauth_client_id: str,
     oauth_client_secret: str,
 ) -> dict | None:
-    """Create a new authorization resource."""
-    de_hostname = _get_de_hostname(ge_location)
+    """Create a new authorization resource.
+
+    Note: Authorization resources are always in the global Discovery Engine location,
+    regardless of where the Gemini Enterprise app is provisioned.
+    """
+    # Auth resources are always global
     url = (
-        f"https://{de_hostname}/v1alpha/projects/{project_number}/"
-        f"locations/{ge_location}/authorizations?authorizationId={auth_id}"
+        f"https://{_AUTH_DE_HOSTNAME}/v1alpha/projects/{project_number}/"
+        f"locations/{_AUTH_LOCATION}/authorizations?authorizationId={auth_id}"
     )
 
     # Build the authorization URI — GE requires the full OAuth2 authorization URL
@@ -190,7 +222,7 @@ def _create_auth(
         "X-Goog-User-Project": project_id,
     }
 
-    response = requests.post(url, headers=headers, json=payload)
+    response = requests.post(url, headers=headers, json=payload, verify=_SSL_VERIFY)
 
     if response.status_code == 200:
         return response.json()

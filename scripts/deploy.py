@@ -34,6 +34,7 @@ from pathlib import Path
 
 import httpx
 import requests
+import urllib3
 import vertexai
 from a2a.types import AgentSkill
 from dotenv import load_dotenv
@@ -56,7 +57,12 @@ from scripts.setup_agent_auth import (
     _check_auth_exists,
     _create_auth,
     _update_env_file,
+    _SSL_VERIFY,
 )
+
+# Suppress InsecureRequestWarning when SSL verification is disabled
+if _SSL_VERIFY is False:
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 # =============================================================================
@@ -128,7 +134,7 @@ def _register_agent_on_gemini_enterprise(
         "X-Goog-User-Project": project_id,
     }
 
-    response = requests.post(api_endpoint, headers=headers, json=payload)
+    response = requests.post(api_endpoint, headers=headers, json=payload, verify=_SSL_VERIFY)
 
     if response.status_code == 200:
         return response.json()
@@ -139,7 +145,7 @@ def _register_agent_on_gemini_enterprise(
     if response.status_code == 400 and "is used by another agent" in response.text and agent_authorization:
         print(f"  ⚠ Authorization resource already in use — retrying without authorization_config...")
         payload.pop("authorization_config", None)
-        response = requests.post(api_endpoint, headers=headers, json=payload)
+        response = requests.post(api_endpoint, headers=headers, json=payload, verify=_SSL_VERIFY)
         if response.status_code == 200:
             print(f"  ℹ Registered without OAuth authorization. Users will need to authenticate separately.")
             return response.json()
@@ -172,7 +178,7 @@ def _unregister_agent_from_gemini_enterprise(
         "X-Goog-User-Project": project_id,
     }
 
-    response = requests.delete(api_endpoint, headers=headers)
+    response = requests.delete(api_endpoint, headers=headers, verify=_SSL_VERIFY)
     return response.status_code in (200, 204, 404)
 
 
@@ -353,7 +359,9 @@ def deploy_agent(agent_name: str, dry_run: bool = False) -> bool:
     }
 
     try:
-        response = httpx.get(a2a_endpoint, headers=headers)
+        # Use verify=False for httpx if SSL verification is disabled
+        httpx_verify = False if _SSL_VERIFY is False else True
+        response = httpx.get(a2a_endpoint, headers=headers, verify=httpx_verify)
         response.raise_for_status()
         a2ui_agent_card_json = response.json()
     except Exception as e:
