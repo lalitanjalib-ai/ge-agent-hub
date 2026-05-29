@@ -139,18 +139,12 @@ def _register_agent_on_gemini_enterprise(
     if response.status_code == 200:
         return response.json()
 
-    # If the authorization resource is already used by another agent, retry without it.
-    # This happens when the same OAuth client was used to create multiple auth resources
-    # and one is already bound to a different agent in GE.
-    if response.status_code == 400 and "is used by another agent" in response.text and agent_authorization:
-        print(f"  ⚠ Authorization resource already in use — retrying without authorization_config...")
-        payload.pop("authorization_config", None)
-        response = requests.post(api_endpoint, headers=headers, json=payload, verify=_SSL_VERIFY)
-        if response.status_code == 200:
-            print(f"  ℹ Registered without OAuth authorization. Users will need to authenticate separately.")
-            return response.json()
-
-    print(f"  ✗ Registration failed (HTTP {response.status_code}): {response.text}")
+    # Log the full error for debugging — always show the complete response body
+    print(f"  ✗ GE registration failed (HTTP {response.status_code})")
+    print(f"    URL: {api_endpoint}")
+    print(f"    Response: {response.text}")
+    if agent_authorization:
+        print(f"    Auth resource used: {agent_authorization}")
     return None
 
 
@@ -407,9 +401,10 @@ def deploy_agent(agent_name: str, dry_run: bool = False) -> bool:
         if project_number and oauth_client_id and oauth_client_secret:
             existing = _check_auth_exists(project_number, ge_location, auth_id, project_id)
             if existing:
+                # Auth resources are ALWAYS at locations/global — use the name from the API response
                 agent_authorization = existing.get(
                     "name",
-                    f"projects/{project_number}/locations/{ge_location}/authorizations/{auth_id}"
+                    f"projects/{project_number}/locations/global/authorizations/{auth_id}"
                 )
                 print(f"  ✓ Auth resource exists: {agent_authorization}")
             else:
@@ -423,13 +418,15 @@ def deploy_agent(agent_name: str, dry_run: bool = False) -> bool:
                     oauth_client_secret=oauth_client_secret,
                 )
                 if result_auth:
+                    # Auth resources are ALWAYS at locations/global
                     agent_authorization = result_auth.get(
                         "name",
-                        f"projects/{project_number}/locations/{ge_location}/authorizations/{auth_id}"
+                        f"projects/{project_number}/locations/global/authorizations/{auth_id}"
                     )
                     print(f"  ✓ Created auth resource: {agent_authorization}")
                 else:
-                    print(f"  ⚠ Could not create auth resource '{auth_id}' — will register without OAuth")
+                    print(f"  ✗ Could not create auth resource '{auth_id}' — GE registration will fail without OAuth")
+                    print(f"    Check OAUTH_CLIENT_ID/SECRET are correct and the OAuth client has the required redirect URIs")
         else:
             print(f"  ⚠ Missing OAUTH_CLIENT_ID/SECRET or project number — skipping auth resource creation")
     else:
