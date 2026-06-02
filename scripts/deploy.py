@@ -148,6 +148,56 @@ def _register_agent_on_gemini_enterprise(
     return None
 
 
+def _set_agent_access_policy(
+    project_id: str,
+    app_id: str,
+    agent_name: str,
+    access_policy: str = "ALL_USERS",
+    ge_location: str = "global",
+) -> bool:
+    """Set the access policy for a registered GE agent (who can see/use it).
+
+    Args:
+        project_id: GCP project ID.
+        app_id: Gemini Enterprise app ID.
+        agent_name: The agent name as registered in GE (e.g. 'employee_verification_agent').
+        access_policy: 'ALL_USERS' (visible to all org users) or 'ADMINS_ONLY' (default in GE).
+        ge_location: GE app region ('global', 'us', 'eu').
+
+    Returns:
+        True if successful, False otherwise.
+    """
+    de_hostname = _get_de_hostname(ge_location)
+    api_endpoint = (
+        f"https://{de_hostname}/v1alpha/projects/{project_id}/"
+        f"locations/{ge_location}/collections/default_collection/engines/{app_id}/"
+        f"assistants/default_assistant/agents/{agent_name}"
+    )
+
+    bearer_token = _get_bearer_token()
+    if not bearer_token:
+        return False
+
+    headers = {
+        "Authorization": f"Bearer {bearer_token}",
+        "Content-Type": "application/json",
+        "X-Goog-User-Project": project_id,
+    }
+
+    payload = {"accessPolicy": access_policy}
+    params = {"updateMask": "accessPolicy"}
+
+    response = requests.patch(
+        api_endpoint, headers=headers, json=payload, params=params, verify=_SSL_VERIFY
+    )
+
+    if response.status_code == 200:
+        return True
+
+    print(f"  ⚠ Could not set access policy (HTTP {response.status_code}): {response.text}")
+    return False
+
+
 def _unregister_agent_from_gemini_enterprise(
     project_id: str,
     app_id: str,
@@ -459,6 +509,22 @@ def deploy_agent(agent_name: str, dry_run: bool = False) -> bool:
 
     if result:
         print(f"  ✓ Registered in Gemini Enterprise")
+
+        # Set access policy — who can see and use this agent in GE
+        # Default: ALL_USERS (visible to everyone in the org)
+        # Override per-agent in config YAML: deploy.ge_access_policy: "ADMINS_ONLY"
+        access_policy = deploy_cfg.get("ge_access_policy", "ALL_USERS")
+        print(f"  ⏳ Setting access policy to '{access_policy}'...")
+        if _set_agent_access_policy(
+            project_id=project_id,
+            app_id=app_id,
+            agent_name=f"{agent_name}_agent",
+            access_policy=access_policy,
+            ge_location=ge_location,
+        ):
+            print(f"  ✓ Access policy set to '{access_policy}' — agent is visible to all org users")
+        else:
+            print(f"  ⚠ Could not set access policy — you may need to enable the agent manually in the GE console")
     else:
         print(f"  ⚠ Agent deployed but GE registration failed")
 
