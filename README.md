@@ -10,6 +10,10 @@ kpmg_agents/
 ├── .env / .env.example                   # Environment configuration
 ├── .gitignore
 │
+├── adhoc/                                # One-time setup scripts (run before first deploy)
+│   ├── README.md                         # Instructions for each adhoc script
+│   └── setup_employee_bq.py              # Create BQ dataset, table, and mock data
+│
 ├── config/                               # Agent configurations (YAML)
 │   ├── _defaults.yaml                    # Shared defaults (model, region, etc.)
 │   └── employee_verification.yaml        # Agent-specific config
@@ -35,50 +39,107 @@ kpmg_agents/
 │       ├── update_employee_field.py
 │       └── verify_employee.py
 │
-├── scripts/                              # Deploy + setup scripts
+├── scripts/                              # Deploy + lifecycle scripts
 │   ├── deploy.py                         # Generic deploy CLI
 │   ├── undeploy.py                       # Tear down agents
-│   └── setup_bigquery.py                 # BigQuery table + mock data
+│   └── setup_agent_auth.py              # Create GE OAuth authorization resource
 │
 └── data/                                 # Mock data, schemas, etc.
 ```
 
-## Quick Start
+---
+
+## Getting Started (New Project Setup)
+
+Follow these steps **in order** when setting up in a new GCP project.
 
 ### Prerequisites
 - Google Cloud Project with Vertex AI and Gemini Enterprise enabled
-- `gcloud` CLI authenticated (`gcloud auth application-default login`)
+- `gcloud` CLI authenticated: `gcloud auth application-default login`
 - Python 3.11+ with `uv` (recommended)
+- **Windows corporate machine?** Add `SSL_VERIFY=false` to your `.env` (see Step 2)
 
-### 1. Install dependencies
+---
+
+### Step 1 — Install dependencies
 ```bash
 cd kpmg_agents
 uv sync
-source .venv/bin/activate
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
 ```
 
-### 2. Configure environment
+### Step 2 — Configure environment
 ```bash
 cp .env.example .env
-# Edit .env with your project settings
 ```
 
-### 3. Set up BigQuery (for employee verification agent)
+Edit `.env` and fill in:
+| Variable | Description |
+|---|---|
+| `PROJECT_ID` | Your GCP project ID |
+| `LOCATION` | Agent Engine region (e.g. `us-central1`) |
+| `STORAGE_BUCKET` | GCS bucket for staging (e.g. `gs://my-bucket`) |
+| `GEMINI_ENTERPRISE_APP_ID` | Your GE app ID from the GCP Console |
+| `GE_LOCATION` | GE app region: `global`, `us`, or `eu` |
+| `OAUTH_CLIENT_ID` | OAuth 2.0 client ID (for agent authorization) |
+| `OAUTH_CLIENT_SECRET` | OAuth 2.0 client secret |
+| `SSL_VERIFY` | Set to `false` on Windows corporate machines with custom CAs |
+
+> **Finding your GE App ID:** GCP Console → Vertex AI → Agent Builder → your app → copy the ID from the URL
+
+### Step 3 — Enable required GCP APIs
 ```bash
-python scripts/setup_bigquery.py
+gcloud services enable \
+  aiplatform.googleapis.com \
+  bigquery.googleapis.com \
+  discoveryengine.googleapis.com \
+  --project=$PROJECT_ID
 ```
 
-### 4. Deploy
+### Step 4 — Set up BigQuery (mock employee data)
 ```bash
-# Deploy a single agent
+python adhoc/setup_employee_bq.py
+```
+
+This creates the `employee_verification` dataset and loads 6 test employees.
+It also **prints the exact IAM commands** you need to run in Step 5.
+
+### Step 5 — Grant IAM permissions to Agent Engine
+Copy and run the `gcloud` commands printed by Step 4. They look like:
+```bash
+gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
+  --member="serviceAccount:service-PROJECT_NUMBER@gcp-sa-aiplatform-re.iam.gserviceaccount.com" \
+  --role="roles/aiplatform.user"
+
+gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
+  --member="serviceAccount:service-PROJECT_NUMBER@gcp-sa-aiplatform-re.iam.gserviceaccount.com" \
+  --role="roles/bigquery.dataViewer"
+
+gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
+  --member="serviceAccount:service-PROJECT_NUMBER@gcp-sa-aiplatform-re.iam.gserviceaccount.com" \
+  --role="roles/bigquery.jobUser"
+```
+
+### Step 6 — Set up OAuth authorization resource
+```bash
+python scripts/setup_agent_auth.py
+```
+
+> **Prerequisites for this step:**
+> - Create an OAuth 2.0 Web Application client in GCP Console → APIs & Services → Credentials
+> - Add these redirect URIs to the client:
+>   - `https://vertexaisearch.cloud.google.com/oauth-redirect`
+>   - `https://vertexaisearch.cloud.google.com/static/oauth/oauth.html`
+> - Set `OAUTH_CLIENT_ID` and `OAUTH_CLIENT_SECRET` in your `.env`
+
+### Step 7 — Deploy
+```bash
 python scripts/deploy.py employee_verification
-
-# Deploy multiple agents
-python scripts/deploy.py employee_verification benefits_enrollment
-
-# Deploy ALL agents
-python scripts/deploy.py --all
 ```
+
+That's it! The agent will be deployed to Agent Engine and registered in Gemini Enterprise.
+
+---
 
 ## Deploy CLI Reference
 
