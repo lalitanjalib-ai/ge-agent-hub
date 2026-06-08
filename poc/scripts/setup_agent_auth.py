@@ -36,8 +36,15 @@ import os
 import sys
 from pathlib import Path
 
-import requests
+# Add project root to sys.path and load environment variables early
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
 from dotenv import load_dotenv
+load_dotenv(_PROJECT_ROOT / ".env", override=True)
+
+import requests
 from google.auth import default
 from google.auth.transport.requests import Request
 
@@ -61,11 +68,6 @@ elif os.environ.get("REQUESTS_CA_BUNDLE"):
 # regardless of where the Gemini Enterprise app is provisioned.
 _AUTH_LOCATION = "global"
 _AUTH_DE_HOSTNAME = "discoveryengine.googleapis.com"
-
-# Add project root to sys.path
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(_PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT))
 
 
 # =============================================================================
@@ -191,23 +193,43 @@ def _create_auth(
     # Build the authorization URI — GE requires the full OAuth2 authorization URL
     # including all required query parameters. The redirect URI must be registered
     # in the OAuth client's allowed redirect URIs in GCP Console.
+    auth_base_uri = os.environ.get("OAUTH_AUTHORIZATION_URI", "https://accounts.google.com/o/oauth2/v2/auth").strip('"')
+    token_uri = os.environ.get("OAUTH_TOKEN_URI", "https://oauth2.googleapis.com/token").strip('"')
+    scopes = os.environ.get("OAUTH_SCOPES", "https://www.googleapis.com/auth/cloud-platform").strip('"')
+
     redirect_uri = "https%3A%2F%2Fvertexaisearch.cloud.google.com%2Fstatic%2Foauth%2Foauth.html"
-    authorization_uri = (
-        f"https://accounts.google.com/o/oauth2/v2/auth"
-        f"?client_id={oauth_client_id}"
-        f"&redirect_uri={redirect_uri}"
-        f"&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcloud-platform"
-        f"&include_granted_scopes=true"
-        f"&response_type=code"
-        f"&access_type=offline"
-        f"&prompt=consent"
-    )
+
+    import urllib.parse
+    encoded_scopes = urllib.parse.quote(scopes)
+
+    if "google.com" in auth_base_uri:
+        authorization_uri = (
+            f"{auth_base_uri}"
+            f"?client_id={oauth_client_id}"
+            f"&redirect_uri={redirect_uri}"
+            f"&scope={encoded_scopes}"
+            f"&include_granted_scopes=true"
+            f"&response_type=code"
+            f"&access_type=offline"
+            f"&prompt=consent"
+        )
+    else:
+        # Microsoft or other custom provider
+        authorization_uri = (
+            f"{auth_base_uri}"
+            f"?client_id={oauth_client_id}"
+            f"&redirect_uri={redirect_uri}"
+            f"&scope={encoded_scopes}"
+            f"&response_type=code"
+        )
+        if "microsoftonline.com" in auth_base_uri:
+            authorization_uri += "&response_mode=query"
 
     payload = {
         "serverSideOauth2": {
             "clientId": oauth_client_id,
             "clientSecret": oauth_client_secret,
-            "tokenUri": "https://oauth2.googleapis.com/token",
+            "tokenUri": token_uri,
             "authorizationUri": authorization_uri,
         }
     }
