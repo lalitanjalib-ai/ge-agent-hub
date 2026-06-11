@@ -1,0 +1,213 @@
+[
+  {
+    "beginRendering": {
+      "surfaceId": "kpmg-metric-card",
+      "root": "metrics_row",
+      "styles": {
+        "primaryColor": "#00338D",
+        "font": "Roboto"
+      }
+    }
+  },
+  {
+    "surfaceUpdate": {
+      "surfaceId": "kpmg-metric-card",
+      "components": [
+        {
+          "id": "metrics_row",
+          "component": {
+            "Row": {
+              "children": {
+                "explicitList": [
+                  "metric_verified",
+                  "metric_pending",
+                  "metric_total"
+                ]
+              },
+              "distribution": "spaceEvenly"
+            }
+          }
+        },
+        {
+          "id": "metric_verified",
+          "component": {
+            "Card": {
+              "child": "metric_verified_col"
+            }
+          }
+        },
+        {
+          "id": "metric_verified_col",
+          "component": {
+            "Column": {
+              "children": {
+                "explicitList": [
+                  "metric_verified_label",
+                  "metric_verified_value",
+                  "metric_verified_trend"
+                ]
+              },
+              "alignment": "center"
+            }
+          }
+        },
+        {
+          "id": "metric_verified_label",
+          "component": {
+            "Text": {
+              "text": {
+                "path": "/metrics/verified/label"
+              },
+              "usageHint": "caption"
+            }
+          }
+        },
+        {
+          "id": "metric_verified_value",
+          "component": {
+            "Text": {
+              "text": {
+                "path": "/metrics/verified/value"
+              },
+              "usageHint": "h2"
+            }
+          }
+        },
+        {
+          "id": "metric_verified_trend",
+          "component": {
+            "Text": {
+              "text": {
+                "path": "/metrics/verified/trend"
+              },
+              "usageHint": "caption"
+            }
+          }
+        },
+        {
+          "id": "metric_pending",
+          "component": {
+            "Card": {
+              "child": "metric_pending_col"
+            }
+          }
+        },
+        {
+          "id": "metric_pending_col",
+          "component": {
+            "Column": {
+              "children": {
+                "explicitList": [
+                  "metric_pending_label",
+                  "metric_pending_value"
+                ]
+              },
+              "alignment": "center"
+            }
+          }
+        },
+        {
+          "id": "metric_pending_label",
+          "component": {
+            "Text": {
+              "text": {
+                "path": "/metrics/pending/label"
+              },
+              "usageHint": "caption"
+            }
+          }
+        },
+        {
+          "id": "metric_pending_value",
+          "component": {
+            "Text": {
+              "text": {
+                "path": "/metrics/pending/value"
+              },
+              "usageHint": "h2"
+            }
+          }
+        },
+        {
+          "id": "metric_total",
+          "component": {
+            "Card": {
+              "child": "metric_total_col"
+            }
+          }
+        },
+        {
+          "id": "metric_total_col",
+          "component": {
+            "Column": {
+              "children": {
+                "explicitList": [
+                  "metric_total_label",
+                  "metric_total_value"
+                ]
+              },
+              "alignment": "center"
+            }
+          }
+        },
+        {
+          "id": "metric_total_label",
+          "component": {
+            "Text": {
+              "text": {
+                "path": "/metrics/total/label"
+              },
+              "usageHint": "caption"
+            }
+          }
+        },
+        {
+          "id": "metric_total_value",
+          "component": {
+            "Text": {
+              "text": {
+                "path": "/metrics/total/value"
+              },
+              "usageHint": "h2"
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "dataModelUpdate": {
+      "surfaceId": "kpmg-metric-card",
+      "path": "/",
+      "contents": [
+        {
+          "key": "metrics",
+          "valueMap": [
+            {
+              "key": "verified",
+              "valueMap": [
+                { "key": "label", "valueString": "Verified" },
+                { "key": "value", "valueString": "128" },
+                { "key": "trend", "valueString": "+12% this month" }
+              ]
+            },
+            {
+              "key": "pending",
+              "valueMap": [
+                { "key": "label", "valueString": "Pending" },
+                { "key": "value", "valueString": "14" }
+              ]
+            },
+            {
+              "key": "total",
+              "valueMap": [
+                { "key": "label", "valueString": "Total Employees" },
+                { "key": "value", "valueString": "142" }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+]

@@ -9,11 +9,11 @@ import os
 import logging
 from google.adk.agents import Agent
 from a2ui.schema.manager import A2uiSchemaManager
-from a2ui.basic_catalog.provider import BasicCatalog
 from a2ui.schema.common_modifiers import remove_strict_validation
 from a2ui.schema.constants import VERSION_0_8
 
 from agents._base.config_loader import load_agent_config, resolve_tool_functions
+from widgets.python.provider import KpmgWidgetsCatalog
 
 logger = logging.getLogger(__name__)
 
@@ -36,12 +36,9 @@ def create_agent() -> Agent:
     # Build A2UI system prompt
     schema_manager = A2uiSchemaManager(
         version=VERSION_0_8,
-        catalogs=[
-            BasicCatalog.get_config(
-                version=VERSION_0_8,
-                examples_path=examples_path,
-            )
-        ],
+        catalogs=KpmgWidgetsCatalog.get_catalogs_for_agent(
+            agent_examples_path=examples_path,
+        ),
         schema_modifiers=[remove_strict_validation],
     )
 

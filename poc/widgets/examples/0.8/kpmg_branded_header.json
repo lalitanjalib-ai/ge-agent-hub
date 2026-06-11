@@ -1,0 +1,86 @@
+[
+  {
+    "beginRendering": {
+      "surfaceId": "kpmg-branded-header",
+      "root": "header_card",
+      "styles": {
+        "primaryColor": "#00338D",
+        "font": "Roboto"
+      }
+    }
+  },
+  {
+    "surfaceUpdate": {
+      "surfaceId": "kpmg-branded-header",
+      "components": [
+        {
+          "id": "header_card",
+          "component": {
+            "Card": {
+              "child": "header_column"
+            }
+          }
+        },
+        {
+          "id": "header_column",
+          "component": {
+            "Column": {
+              "children": {
+                "explicitList": [
+                  "header_icon",
+                  "header_title",
+                  "header_subtitle"
+                ]
+              },
+              "alignment": "center"
+            }
+          }
+        },
+        {
+          "id": "header_icon",
+          "component": {
+            "Icon": {
+              "name": {
+                "literalString": "verifiedUser"
+              }
+            }
+          }
+        },
+        {
+          "id": "header_title",
+          "component": {
+            "Text": {
+              "text": {
+                "literalString": "KPMG Employee Services"
+              },
+              "usageHint": "h2"
+            }
+          }
+        },
+        {
+          "id": "header_subtitle",
+          "component": {
+            "Text": {
+              "text": {
+                "path": "/subtitle"
+              },
+              "usageHint": "h4"
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "dataModelUpdate": {
+      "surfaceId": "kpmg-branded-header",
+      "path": "/",
+      "contents": [
+        {
+          "key": "subtitle",
+          "valueString": "Review and verify your employment record"
+        }
+      ]
+    }
+  }
+]

@@ -1,0 +1,251 @@
+[
+  {
+    "beginRendering": {
+      "surfaceId": "kpmg-data-field-row",
+      "root": "field_card",
+      "styles": {
+        "primaryColor": "#00338D",
+        "font": "Roboto"
+      }
+    }
+  },
+  {
+    "surfaceUpdate": {
+      "surfaceId": "kpmg-data-field-row",
+      "components": [
+        {
+          "id": "field_card",
+          "component": {
+            "Card": {
+              "child": "fields_column"
+            }
+          }
+        },
+        {
+          "id": "fields_column",
+          "component": {
+            "Column": {
+              "children": {
+                "explicitList": [
+                  "section_title",
+                  "field_employee_id",
+                  "field_name",
+                  "field_department"
+                ]
+              },
+              "alignment": "stretch"
+            }
+          }
+        },
+        {
+          "id": "section_title",
+          "component": {
+            "Text": {
+              "text": {
+                "literalString": "Employment Details (Read-Only)"
+              },
+              "usageHint": "h5"
+            }
+          }
+        },
+        {
+          "id": "field_employee_id",
+          "component": {
+            "Row": {
+              "children": {
+                "explicitList": [
+                  "field_employee_id_icon",
+                  "field_employee_id_col"
+                ]
+              },
+              "alignment": "center"
+            }
+          }
+        },
+        {
+          "id": "field_employee_id_icon",
+          "component": {
+            "Icon": {
+              "name": {
+                "literalString": "badge"
+              }
+            }
+          }
+        },
+        {
+          "id": "field_employee_id_col",
+          "component": {
+            "Column": {
+              "children": {
+                "explicitList": [
+                  "field_employee_id_label",
+                  "field_employee_id_value"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "id": "field_employee_id_label",
+          "component": {
+            "Text": {
+              "text": {
+                "literalString": "Employee ID"
+              },
+              "usageHint": "caption"
+            }
+          }
+        },
+        {
+          "id": "field_employee_id_value",
+          "component": {
+            "Text": {
+              "text": {
+                "path": "/employee_id"
+              },
+              "usageHint": "h5"
+            }
+          }
+        },
+        {
+          "id": "field_name",
+          "component": {
+            "Row": {
+              "children": {
+                "explicitList": [
+                  "field_name_icon",
+                  "field_name_col"
+                ]
+              },
+              "alignment": "center"
+            }
+          }
+        },
+        {
+          "id": "field_name_icon",
+          "component": {
+            "Icon": {
+              "name": {
+                "literalString": "person"
+              }
+            }
+          }
+        },
+        {
+          "id": "field_name_col",
+          "component": {
+            "Column": {
+              "children": {
+                "explicitList": [
+                  "field_name_label",
+                  "field_name_value"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "id": "field_name_label",
+          "component": {
+            "Text": {
+              "text": {
+                "literalString": "Full Name"
+              },
+              "usageHint": "caption"
+            }
+          }
+        },
+        {
+          "id": "field_name_value",
+          "component": {
+            "Text": {
+              "text": {
+                "path": "/name"
+              },
+              "usageHint": "h5"
+            }
+          }
+        },
+        {
+          "id": "field_department",
+          "component": {
+            "Row": {
+              "children": {
+                "explicitList": [
+                  "field_department_icon",
+                  "field_department_col"
+                ]
+              },
+              "alignment": "center"
+            }
+          }
+        },
+        {
+          "id": "field_department_icon",
+          "component": {
+            "Icon": {
+              "name": {
+                "literalString": "business"
+              }
+            }
+          }
+        },
+        {
+          "id": "field_department_col",
+          "component": {
+            "Column": {
+              "children": {
+                "explicitList": [
+                  "field_department_label",
+                  "field_department_value"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "id": "field_department_label",
+          "component": {
+            "Text": {
+              "text": {
+                "literalString": "Department"
+              },
+              "usageHint": "caption"
+            }
+          }
+        },
+        {
+          "id": "field_department_value",
+          "component": {
+            "Text": {
+              "text": {
+                "path": "/department"
+              },
+              "usageHint": "h5"
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "dataModelUpdate": {
+      "surfaceId": "kpmg-data-field-row",
+      "path": "/",
+      "contents": [
+        {
+          "key": "employee_id",
+          "valueString": "E-1001"
+        },
+        {
+          "key": "name",
+          "valueString": "John Smith"
+        },
+        {
+          "key": "department",
+          "valueString": "Advisory"
+        }
+      ]
+    }
+  }
+]

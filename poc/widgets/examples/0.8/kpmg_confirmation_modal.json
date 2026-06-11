@@ -1,0 +1,159 @@
+[
+  {
+    "beginRendering": {
+      "surfaceId": "kpmg-confirmation-modal",
+      "root": "modal_wrapper",
+      "styles": {
+        "primaryColor": "#00338D",
+        "font": "Roboto"
+      }
+    }
+  },
+  {
+    "surfaceUpdate": {
+      "surfaceId": "kpmg-confirmation-modal",
+      "components": [
+        {
+          "id": "modal_wrapper",
+          "component": {
+            "Modal": {
+              "entryPointChild": "hidden_entry",
+              "contentChild": "modal_column"
+            }
+          }
+        },
+        {
+          "id": "hidden_entry",
+          "component": {
+            "Text": {
+              "text": {
+                "literalString": ""
+              }
+            }
+          }
+        },
+        {
+          "id": "modal_column",
+          "component": {
+            "Column": {
+              "children": {
+                "explicitList": [
+                  "modal_icon",
+                  "modal_title",
+                  "modal_message",
+                  "modal_actions"
+                ]
+              },
+              "alignment": "center"
+            }
+          }
+        },
+        {
+          "id": "modal_icon",
+          "component": {
+            "Icon": {
+              "name": {
+                "literalString": "info"
+              }
+            }
+          }
+        },
+        {
+          "id": "modal_title",
+          "component": {
+            "Text": {
+              "text": {
+                "path": "/title"
+              },
+              "usageHint": "h2"
+            }
+          }
+        },
+        {
+          "id": "modal_message",
+          "component": {
+            "Text": {
+              "text": {
+                "path": "/message"
+              }
+            }
+          }
+        },
+        {
+          "id": "modal_actions",
+          "component": {
+            "Row": {
+              "children": {
+                "explicitList": [
+                  "confirm_button",
+                  "cancel_button"
+                ]
+              },
+              "distribution": "spaceEvenly"
+            }
+          }
+        },
+        {
+          "id": "confirm_button",
+          "component": {
+            "Button": {
+              "child": "confirm_text",
+              "action": {
+                "name": "confirm_action"
+              },
+              "variant": "primary"
+            }
+          }
+        },
+        {
+          "id": "confirm_text",
+          "component": {
+            "Text": {
+              "text": {
+                "literalString": "Confirm"
+              }
+            }
+          }
+        },
+        {
+          "id": "cancel_button",
+          "component": {
+            "Button": {
+              "child": "cancel_text",
+              "action": {
+                "name": "cancel_action"
+              },
+              "variant": "secondary"
+            }
+          }
+        },
+        {
+          "id": "cancel_text",
+          "component": {
+            "Text": {
+              "text": {
+                "literalString": "Cancel"
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "dataModelUpdate": {
+      "surfaceId": "kpmg-confirmation-modal",
+      "path": "/",
+      "contents": [
+        {
+          "key": "title",
+          "valueString": "Confirm Verification"
+        },
+        {
+          "key": "message",
+          "valueString": "You are about to mark this employee record as verified. Continue?"
+        }
+      ]
+    }
+  }
+]

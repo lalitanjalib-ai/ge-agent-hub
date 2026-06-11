@@ -17,20 +17,41 @@ Usage:
     python scripts/undeploy.py --list
 """
 
-import argparse
-import os
+# Add project root to sys.path and load environment variables early
 import sys
 from pathlib import Path
-
-import requests
-from dotenv import load_dotenv
-from google.auth import default
-from google.auth.transport.requests import Request
-
-# Add project root to sys.path
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
+
+import os
+from dotenv import load_dotenv
+load_dotenv(os.path.join(_PROJECT_ROOT, ".env"), override=True)
+
+import argparse
+import os
+import sys
+
+import requests
+import urllib3
+from google.auth import default
+from google.auth.transport.requests import Request
+
+# =============================================================================
+# SSL / Certificate handling
+# =============================================================================
+_SSL_VERIFY: bool | str = True
+_ssl_verify_env = os.environ.get("SSL_VERIFY", "").strip().lower()
+if _ssl_verify_env in ("false", "0", "no"):
+    _SSL_VERIFY = False
+elif _ssl_verify_env:
+    _SSL_VERIFY = _ssl_verify_env
+elif os.environ.get("REQUESTS_CA_BUNDLE"):
+    _SSL_VERIFY = os.environ.get("REQUESTS_CA_BUNDLE")
+
+# Suppress warnings if SSL verification is disabled
+if _SSL_VERIFY is False:
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 from agents._base.config_loader import load_agent_config, list_available_agents
 
@@ -73,7 +94,7 @@ def _list_ge_agents(project_id: str, app_id: str, ge_location: str = "global") -
         "X-Goog-User-Project": project_id,
     }
 
-    response = requests.get(api_endpoint, headers=headers)
+    response = requests.get(api_endpoint, headers=headers, verify=_SSL_VERIFY)
     if response.status_code == 200:
         return response.json().get("agents", [])
     return []
@@ -98,7 +119,7 @@ def _unregister_agent(project_id: str, app_id: str, agent_name: str, ge_location
         "X-Goog-User-Project": project_id,
     }
 
-    response = requests.delete(api_endpoint, headers=headers)
+    response = requests.delete(api_endpoint, headers=headers, verify=_SSL_VERIFY)
     return response.status_code in (200, 204, 404)
 
 
@@ -127,7 +148,7 @@ def undeploy_agent(agent_name: str, project_id: str, app_id: str, location: str,
 
 
 def main():
-    load_dotenv(os.path.join(_PROJECT_ROOT, ".env"))
+    load_dotenv(os.path.join(_PROJECT_ROOT, ".env"), override=True)
 
     parser = argparse.ArgumentParser(
         description="Agent Framework — Undeploy agents from Gemini Enterprise",

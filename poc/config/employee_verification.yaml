@@ -136,6 +136,7 @@ deploy:
     - "agents"
     - "tools"
     - "config"
+    - "widgets"
 
   # Stable per-agent authorization resource ID for Gemini Enterprise OAuth.
   # This ID is reused across every redeploy of this agent — do NOT change it.

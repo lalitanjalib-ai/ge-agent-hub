@@ -32,6 +32,11 @@ kpmg_agents/
 │           ├── action_confirmation.json
 │           └── verification_success.json
 │
+├── widgets/                              # KPMG A2UI widgets library
+│   ├── catalog/                          # Widget schema definitions
+│   ├── examples/0.8/                     # Branded example payloads
+│   └── python/                           # Builders + schema provider
+│
 ├── tools/                                # Shared tool library
 │   ├── registry.py                       # Tool metadata catalog
 │   └── employee/                         # Tools grouped by domain
@@ -292,3 +297,4 @@ all_tools = list_all_tools()
 | **Executor** | Base class in `agents/_base/base_executor.py`, agents subclass with 3 lines |
 | **Deploy** | Generic `scripts/deploy.py` reads config, imports executor dynamically |
 | **A2UI** | Examples stored per-agent in `agents/<name>/examples/0.8/` |
+| **KPMG Widgets** | Shared branded patterns in `widgets/` — see `widgets/README.md` |

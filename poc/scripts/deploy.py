@@ -24,39 +24,40 @@ Usage:
     python scripts/deploy.py employee_verification --undeploy
 """
 
+# Add project root to sys.path and load environment variables early
+import sys
+from pathlib import Path
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+import os
+from dotenv import load_dotenv
+load_dotenv(os.path.join(_PROJECT_ROOT, ".env"), override=True)
+
 import argparse
 import importlib
 import json
 import os
 import sys
 import time
-from pathlib import Path
 
 import httpx
 import requests
 import urllib3
 import vertexai
 from a2a.types import AgentSkill
-from dotenv import load_dotenv
 from google.auth import default
 from google.auth.transport.requests import Request
 from google.genai import types
 from vertexai.preview.reasoning_engines import A2aAgent
 from vertexai.preview.reasoning_engines.templates.a2a import create_agent_card
 
-# Add project root to sys.path so we can import agents/tools
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(_PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT))
-
 from agents._base.config_loader import load_agent_config, list_available_agents
 
 # Import setup_agent_auth helpers inline to avoid circular imports
 from scripts.setup_agent_auth import (
     _get_project_number,
-    _check_auth_exists,
-    _create_auth,
-    _update_env_file,
     _SSL_VERIFY,
 )
 
@@ -105,6 +106,7 @@ def _register_agent_on_gemini_enterprise(
     description: str,
     agent_authorization: str | None = None,
     ge_location: str = "global",
+    reasoning_engine: str | None = None,
 ) -> dict | None:
     """Register an Agent Engine agent in Gemini Enterprise."""
     de_hostname = _get_de_hostname(ge_location)
@@ -118,8 +120,19 @@ def _register_agent_on_gemini_enterprise(
         "name": agent_name,
         "displayName": display_name,
         "description": description,
-        "a2aAgentDefinition": {"jsonAgentCard": agent_card},
     }
+
+    if reasoning_engine:
+        payload["adkAgentDefinition"] = {
+            "toolSettings": {
+                "toolDescription": display_name
+            },
+            "provisionedReasoningEngine": {
+                "reasoningEngine": reasoning_engine
+            }
+        }
+    else:
+        payload["a2aAgentDefinition"] = {"jsonAgentCard": agent_card}
 
     if agent_authorization:
         payload["authorization_config"] = {"agent_authorization": agent_authorization}
@@ -224,6 +237,55 @@ def _unregister_agent_from_gemini_enterprise(
 
     response = requests.delete(api_endpoint, headers=headers, verify=_SSL_VERIFY)
     return response.status_code in (200, 204, 404)
+
+
+def _get_existing_agent_authorization(
+    project_id: str,
+    app_id: str,
+    display_name: str,
+    ge_location: str = "global",
+) -> str | None:
+    """Find the existing agent in Gemini Enterprise and return its configured authorization resource."""
+    de_hostname = _get_de_hostname(ge_location)
+    api_endpoint = (
+        f"https://{de_hostname}/v1alpha/projects/{project_id}/"
+        f"locations/{ge_location}/collections/default_collection/engines/{app_id}/"
+        "assistants/default_assistant/agents?pageSize=200"
+    )
+
+    bearer_token = _get_bearer_token()
+    if not bearer_token:
+        return None
+
+    headers = {
+        "Authorization": f"Bearer {bearer_token}",
+        "Content-Type": "application/json",
+        "X-Goog-User-Project": project_id,
+    }
+
+    try:
+        response = requests.get(api_endpoint, headers=headers, verify=_SSL_VERIFY)
+        if response.status_code == 200:
+            agents = response.json().get("agents", [])
+            for agent in agents:
+                # Match by display name (case-insensitive partial match)
+                if display_name.lower() in agent.get("displayName", "").lower():
+                    # Check for authorizationConfig or authorization_config
+                    auth_config = agent.get("authorizationConfig") or agent.get("authorization_config") or {}
+                    # Check for toolAuthorizations, tool_authorizations, or agent_authorization
+                    auths = (
+                        auth_config.get("toolAuthorizations")
+                        or auth_config.get("tool_authorizations")
+                        or []
+                    )
+                    if auths and isinstance(auths, list):
+                        return auths[0]
+                    single_auth = auth_config.get("agent_authorization") or auth_config.get("agentAuthorization")
+                    if single_auth:
+                        return single_auth
+    except Exception as e:
+        print(f"  ⚠ Error fetching existing agent authorization: {e}")
+    return None
 
 
 # =============================================================================
@@ -441,47 +503,29 @@ def deploy_agent(agent_name: str, dry_run: bool = False) -> bool:
     ge_location = os.environ.get("GE_LOCATION", "global")
     agent_authorization = None
 
-    # Check for per-agent auth ID in config (preferred pattern)
-    auth_id = deploy_cfg.get("agent_authorization_id")
-    if auth_id:
-        oauth_client_id = os.environ.get("OAUTH_CLIENT_ID")
-        oauth_client_secret = os.environ.get("OAUTH_CLIENT_SECRET")
-        project_number = _get_project_number(project_id)
-
-        if project_number and oauth_client_id and oauth_client_secret:
-            existing = _check_auth_exists(project_number, ge_location, auth_id, project_id)
-            if existing:
-                # Auth resources are ALWAYS at locations/global — use the name from the API response
-                agent_authorization = existing.get(
-                    "name",
-                    f"projects/{project_number}/locations/global/authorizations/{auth_id}"
-                )
-                print(f"  ✓ Auth resource exists: {agent_authorization}")
-            else:
-                print(f"  ⏳ Creating auth resource '{auth_id}'...")
-                result_auth = _create_auth(
-                    project_number=project_number,
-                    ge_location=ge_location,
-                    auth_id=auth_id,
-                    project_id=project_id,
-                    oauth_client_id=oauth_client_id,
-                    oauth_client_secret=oauth_client_secret,
-                )
-                if result_auth:
-                    # Auth resources are ALWAYS at locations/global
-                    agent_authorization = result_auth.get(
-                        "name",
-                        f"projects/{project_number}/locations/global/authorizations/{auth_id}"
-                    )
-                    print(f"  ✓ Created auth resource: {agent_authorization}")
-                else:
-                    print(f"  ✗ Could not create auth resource '{auth_id}' — GE registration will fail without OAuth")
-                    print(f"    Check OAUTH_CLIENT_ID/SECRET are correct and the OAuth client has the required redirect URIs")
+    # Check if AGENT_AUTHORIZATION is explicitly set in .env first (highest priority)
+    env_auth = os.environ.get("AGENT_AUTHORIZATION")
+    if env_auth is not None:
+        env_auth_stripped = env_auth.strip('"').strip()
+        if env_auth_stripped.lower() in ("none", ""):
+            agent_authorization = None
+            print("  ✓ Agent authorization explicitly disabled (using 'none' or empty value)")
         else:
-            print(f"  ⚠ Missing OAUTH_CLIENT_ID/SECRET or project number — skipping auth resource creation")
+            agent_authorization = env_auth_stripped
+            print(f"  ✓ Using AGENT_AUTHORIZATION from environment: {agent_authorization}")
     else:
-        # Fallback to global AGENT_AUTHORIZATION env var
-        agent_authorization = os.environ.get("AGENT_AUTHORIZATION")
+        # Fallback to searching for the existing agent's authorization in Gemini Enterprise
+        print(f"  ⏳ Searching for existing authorization for '{display_name}' in Gemini Enterprise...")
+        agent_authorization = _get_existing_agent_authorization(
+            project_id=project_id,
+            app_id=app_id,
+            display_name=display_name,
+            ge_location=ge_location,
+        )
+        if agent_authorization:
+            print(f"  ✓ Found existing authorization in Gemini Enterprise: {agent_authorization}")
+        else:
+            print(f"  ⚠ No existing authorization found for '{display_name}'")
 
     # -------------------------------------------------------------------------
     # Delete any existing GE registration for this agent before re-registering
@@ -505,6 +549,7 @@ def deploy_agent(agent_name: str, dry_run: bool = False) -> bool:
         description=description,
         agent_authorization=agent_authorization,
         ge_location=ge_location,
+        reasoning_engine=remote_engine_resource,
     )
 
     if result:
@@ -677,17 +722,7 @@ Examples:
     # Step 0: Resolve project number (needed for per-agent auth resource creation)
     # -------------------------------------------------------------------------
     _project_number = None
-    if not args.undeploy and not args.dry_run:
-        oauth_client_id = os.environ.get("OAUTH_CLIENT_ID")
-        oauth_client_secret = os.environ.get("OAUTH_CLIENT_SECRET")
-        if oauth_client_id and oauth_client_secret:
-            print("  ⏳ Step 0: Resolving project number for auth resource management...")
-            _project_number = _get_project_number(project_id)
-            if _project_number:
-                print(f"  ✓ Project number: {_project_number}")
-            else:
-                print(f"  ⚠ Could not resolve project number — per-agent auth creation will be skipped.")
-            print()
+    # Skipped resolving project number since auth resource creation and registration are disabled.
 
     # Process each agent
     results = {}

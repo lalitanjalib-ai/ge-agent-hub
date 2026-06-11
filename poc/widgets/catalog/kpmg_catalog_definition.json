@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kpmg.internal/a2ui/v0_8/kpmg_widgets_catalog_definition.json",
+  "title": "KPMG A2UI Widgets Catalog (v0.8)",
+  "description": "KPMG-branded widget patterns for A2UI agents. All widgets compose standard catalog components (Card, Column, Row, Text, Button, Icon, Divider, Modal, List, TextInput) so they render in Gemini Enterprise without a custom client renderer.",
+  "type": "object",
+  "properties": {
+    "KpmgBrandedHeader": {
+      "type": "object",
+      "description": "Centered header with KPMG primary color, icon, title, and optional subtitle bound to the data model.",
+      "properties": {
+        "title": {
+          "type": "object",
+          "properties": {
+            "literalString": { "type": "string" },
+            "path": { "type": "string" }
+          }
+        },
+        "subtitle": {
+          "type": "object",
+          "properties": {
+            "literalString": { "type": "string" },
+            "path": { "type": "string" }
+          }
+        },
+        "icon": {
+          "type": "string",
+          "description": "Material icon name (e.g. verifiedUser, person, badge)."
+        }
+      },
+      "required": ["title"]
+    },
+    "KpmgDataFieldRow": {
+      "type": "object",
+      "description": "Read-only field row: icon, caption label, and value from data model path.",
+      "properties": {
+        "label": { "type": "string" },
+        "value": {
+          "type": "object",
+          "properties": {
+            "literalString": { "type": "string" },
+            "path": { "type": "string" }
+          }
+        },
+        "icon": { "type": "string" }
+      },
+      "required": ["label", "value"]
+    },
+    "KpmgMetricCard": {
+      "type": "object",
+      "description": "KPI card showing label, large metric value, and optional trend caption.",
+      "properties": {
+        "label": {
+          "type": "object",
+          "properties": {
+            "literalString": { "type": "string" },
+            "path": { "type": "string" }
+          }
+        },
+        "value": {
+          "type": "object",
+          "properties": {
+            "literalString": { "type": "string" },
+            "path": { "type": "string" }
+          }
+        },
+        "trend": {
+          "type": "object",
+          "properties": {
+            "literalString": { "type": "string" },
+            "path": { "type": "string" }
+          }
+        }
+      },
+      "required": ["label", "value"]
+    },
+    "KpmgStatusPanel": {
+      "type": "object",
+      "description": "Inline status summary with icon and dynamic status text.",
+      "properties": {
+        "status": {
+          "type": "object",
+          "properties": {
+            "literalString": { "type": "string" },
+            "path": { "type": "string" }
+          }
+        },
+        "icon": { "type": "string" }
+      },
+      "required": ["status"]
+    },
+    "KpmgActionBar": {
+      "type": "object",
+      "description": "Primary and optional secondary action buttons in a horizontal row.",
+      "properties": {
+        "primaryLabel": { "type": "string" },
+        "primaryAction": { "type": "string" },
+        "secondaryLabel": { "type": "string" },
+        "secondaryAction": { "type": "string" }
+      },
+      "required": ["primaryLabel", "primaryAction"]
+    },
+    "KpmgConfirmationModal": {
+      "type": "object",
+      "description": "Modal dialog with title, message, and dismiss action.",
+      "properties": {
+        "title": {
+          "type": "object",
+          "properties": {
+            "literalString": { "type": "string" },
+            "path": { "type": "string" }
+          }
+        },
+        "message": {
+          "type": "object",
+          "properties": {
+            "literalString": { "type": "string" },
+            "path": { "type": "string" }
+          }
+        },
+        "dismissAction": { "type": "string" }
+      },
+      "required": ["title", "message"]
+    }
+  },
+  "kpmgTheme": {
+    "primaryColor": "#00338D",
+    "secondaryColor": "#0091DA",
+    "accentColor": "#6D2077",
+    "successColor": "#00A3A1",
+    "warningColor": "#FF6A00",
+    "errorColor": "#C8102E",
+    "font": "Roboto"
+  },
+  "implementationNote": "Gemini Enterprise renders the A2UI standard catalog. KPMG widgets are implemented as compositions of standard components. See widgets/examples/0.8/ for reference payloads and widgets/python/builders.py for programmatic generation."
+}

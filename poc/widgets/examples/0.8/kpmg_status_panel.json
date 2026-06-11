@@ -1,0 +1,115 @@
+[
+  {
+    "beginRendering": {
+      "surfaceId": "kpmg-status-panel",
+      "root": "status_card",
+      "styles": {
+        "primaryColor": "#00338D",
+        "font": "Roboto"
+      }
+    }
+  },
+  {
+    "surfaceUpdate": {
+      "surfaceId": "kpmg-status-panel",
+      "components": [
+        {
+          "id": "status_card",
+          "component": {
+            "Card": {
+              "child": "status_column"
+            }
+          }
+        },
+        {
+          "id": "status_column",
+          "component": {
+            "Column": {
+              "children": {
+                "explicitList": [
+                  "status_title",
+                  "status_row",
+                  "status_detail"
+                ]
+              },
+              "alignment": "stretch"
+            }
+          }
+        },
+        {
+          "id": "status_title",
+          "component": {
+            "Text": {
+              "text": {
+                "literalString": "Verification Status"
+              },
+              "usageHint": "h5"
+            }
+          }
+        },
+        {
+          "id": "status_row",
+          "component": {
+            "Row": {
+              "children": {
+                "explicitList": [
+                  "status_icon",
+                  "status_text"
+                ]
+              },
+              "alignment": "center"
+            }
+          }
+        },
+        {
+          "id": "status_icon",
+          "component": {
+            "Icon": {
+              "name": {
+                "literalString": "checkCircle"
+              }
+            }
+          }
+        },
+        {
+          "id": "status_text",
+          "component": {
+            "Text": {
+              "text": {
+                "path": "/status"
+              },
+              "usageHint": "h5"
+            }
+          }
+        },
+        {
+          "id": "status_detail",
+          "component": {
+            "Text": {
+              "text": {
+                "path": "/status_detail"
+              },
+              "usageHint": "caption"
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "dataModelUpdate": {
+      "surfaceId": "kpmg-status-panel",
+      "path": "/",
+      "contents": [
+        {
+          "key": "status",
+          "valueString": "Verified — all fields match HR records"
+        },
+        {
+          "key": "status_detail",
+          "valueString": "Last verified: 2026-06-04T18:00:00Z"
+        }
+      ]
+    }
+  }
+]

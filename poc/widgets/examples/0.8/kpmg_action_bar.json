@@ -1,0 +1,123 @@
+[
+  {
+    "beginRendering": {
+      "surfaceId": "kpmg-action-bar",
+      "root": "action_card",
+      "styles": {
+        "primaryColor": "#00338D",
+        "font": "Roboto"
+      }
+    }
+  },
+  {
+    "surfaceUpdate": {
+      "surfaceId": "kpmg-action-bar",
+      "components": [
+        {
+          "id": "action_card",
+          "component": {
+            "Card": {
+              "child": "action_column"
+            }
+          }
+        },
+        {
+          "id": "action_column",
+          "component": {
+            "Column": {
+              "children": {
+                "explicitList": [
+                  "action_summary",
+                  "action_bar"
+                ]
+              },
+              "alignment": "stretch"
+            }
+          }
+        },
+        {
+          "id": "action_summary",
+          "component": {
+            "Text": {
+              "text": {
+                "path": "/summary"
+              },
+              "usageHint": "h5"
+            }
+          }
+        },
+        {
+          "id": "action_bar",
+          "component": {
+            "Row": {
+              "children": {
+                "explicitList": [
+                  "primary_button",
+                  "secondary_button"
+                ]
+              },
+              "alignment": "center",
+              "distribution": "spaceEvenly"
+            }
+          }
+        },
+        {
+          "id": "primary_button",
+          "component": {
+            "Button": {
+              "child": "primary_text",
+              "action": {
+                "name": "submit_verification"
+              },
+              "variant": "primary"
+            }
+          }
+        },
+        {
+          "id": "primary_text",
+          "component": {
+            "Text": {
+              "text": {
+                "literalString": "Submit & Verify"
+              }
+            }
+          }
+        },
+        {
+          "id": "secondary_button",
+          "component": {
+            "Button": {
+              "child": "secondary_text",
+              "action": {
+                "name": "verify_as_is"
+              },
+              "variant": "secondary"
+            }
+          }
+        },
+        {
+          "id": "secondary_text",
+          "component": {
+            "Text": {
+              "text": {
+                "literalString": "Verify As Is"
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "dataModelUpdate": {
+      "surfaceId": "kpmg-action-bar",
+      "path": "/",
+      "contents": [
+        {
+          "key": "summary",
+          "valueString": "Review your changes, then submit or verify as-is."
+        }
+      ]
+    }
+  }
+]
