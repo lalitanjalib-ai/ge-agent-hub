@@ -28,8 +28,10 @@ Usage:
 import sys
 from pathlib import Path
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(_PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT))
+_REPO_ROOT = _PROJECT_ROOT.parent
+for _path in (_PROJECT_ROOT, _REPO_ROOT):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
 
 import os
 from dotenv import load_dotenv
@@ -418,8 +420,15 @@ def deploy_agent(agent_name: str, dry_run: bool = False) -> bool:
     extra_reqs = deploy_cfg.get("extra_requirements", [])
     all_requirements = base_reqs + extra_reqs
 
-    # Build extra packages
-    extra_packages = deploy_cfg.get("extra_packages", [])
+    # Build extra packages (resolve repo-root widgets path)
+    extra_packages = []
+    for pkg in deploy_cfg.get("extra_packages", []):
+        if pkg == "widgets":
+            extra_packages.append(str(_REPO_ROOT / "widgets"))
+        elif pkg == "../widgets":
+            extra_packages.append(str(_REPO_ROOT / "widgets"))
+        else:
+            extra_packages.append(pkg)
 
     # Build env vars
     env_vars = deploy_cfg.get("env_vars", {})

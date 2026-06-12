@@ -61,8 +61,10 @@ from google.cloud import logging as cloud_logging
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(_PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT))
+_REPO_ROOT = _PROJECT_ROOT.parent
+for _path in (_PROJECT_ROOT, _REPO_ROOT):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
 
 from agents._base.config_loader import list_available_agents, load_agent_config
 

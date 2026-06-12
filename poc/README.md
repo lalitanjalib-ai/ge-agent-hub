@@ -5,51 +5,52 @@ A config-driven multi-agent platform for deploying **A2UI**, **A2A**, and **Goog
 ## Architecture
 
 ```
-kpmg_agents/
-├── pyproject.toml                        # Shared dependencies
-├── .env / .env.example                   # Environment configuration
-├── .gitignore
-│
-├── adhoc/                                # One-time setup scripts (run before first deploy)
-│   ├── README.md                         # Instructions for each adhoc script
-│   └── setup_employee_bq.py              # Create BQ dataset, table, and mock data
-│
-├── config/                               # Agent configurations (YAML)
-│   ├── _defaults.yaml                    # Shared defaults (model, region, etc.)
-│   └── employee_verification.yaml        # Agent-specific config
-│
-├── agents/                               # Agent definitions (one folder per agent)
-│   ├── _base/                            # Shared base classes
-│   │   ├── config_loader.py              # YAML config loader + merger
-│   │   └── base_executor.py              # Generic A2A/A2UI executor
-│   │
-│   └── employee_verification/            # Employee Verification Agent
-│       ├── agent.py                      # ADK Agent (reads from config YAML)
-│       ├── executor.py                   # Thin executor subclass (3 lines)
-│       └── examples/0.8/                 # A2UI JSON examples for this agent
-│           ├── employee_list.json
-│           ├── employee_verification_form.json
-│           ├── action_confirmation.json
-│           └── verification_success.json
-│
-├── widgets/                              # KPMG A2UI widgets library
+dn-innov-a2ui/
+├── widgets/                              # KPMG A2UI widgets library (shared)
 │   ├── catalog/                          # Widget schema definitions
 │   ├── examples/0.8/                     # Branded example payloads
 │   └── python/                           # Builders + schema provider
 │
-├── tools/                                # Shared tool library
-│   ├── registry.py                       # Tool metadata catalog
-│   └── employee/                         # Tools grouped by domain
-│       ├── lookup_employee.py
-│       ├── update_employee_field.py
-│       └── verify_employee.py
-│
-├── scripts/                              # Deploy + lifecycle scripts
-│   ├── deploy.py                         # Generic deploy CLI
-│   ├── undeploy.py                       # Tear down agents
-│   └── setup_agent_auth.py              # Create GE OAuth authorization resource
-│
-└── data/                                 # Mock data, schemas, etc.
+└── poc/                                  # Agent platform
+    ├── pyproject.toml                    # Shared dependencies
+    ├── .env / .env.example               # Environment configuration
+    ├── .gitignore
+    │
+    ├── adhoc/                            # One-time setup scripts (run before first deploy)
+    │   ├── README.md                     # Instructions for each adhoc script
+    │   └── setup_employee_bq.py          # Create BQ dataset, table, and mock data
+    │
+    ├── config/                           # Agent configurations (YAML)
+    │   ├── _defaults.yaml                # Shared defaults (model, region, etc.)
+    │   └── employee_verification.yaml    # Agent-specific config
+    │
+    ├── agents/                           # Agent definitions (one folder per agent)
+    │   ├── _base/                        # Shared base classes
+    │   │   ├── config_loader.py          # YAML config loader + merger
+    │   │   └── base_executor.py          # Generic A2A/A2UI executor
+    │   │
+    │   └── employee_verification/        # Employee Verification Agent
+    │       ├── agent.py                  # ADK Agent (reads from config YAML)
+    │       ├── executor.py               # Thin executor subclass (3 lines)
+    │       └── examples/0.8/             # A2UI JSON examples for this agent
+    │           ├── employee_list.json
+    │           ├── employee_verification_form.json
+    │           ├── action_confirmation.json
+    │           └── verification_success.json
+    │
+    ├── tools/                            # Shared tool library
+    │   ├── registry.py                   # Tool metadata catalog
+    │   └── employee/                     # Tools grouped by domain
+    │       ├── lookup_employee.py
+    │       ├── update_employee_field.py
+    │       └── verify_employee.py
+    │
+    ├── scripts/                          # Deploy + lifecycle scripts
+    │   ├── deploy.py                     # Generic deploy CLI
+    │   ├── undeploy.py                   # Tear down agents
+    │   └── setup_agent_auth.py           # Create GE OAuth authorization resource
+    │
+    └── data/                             # Mock data, schemas, etc.
 ```
 
 ---
@@ -297,4 +298,4 @@ all_tools = list_all_tools()
 | **Executor** | Base class in `agents/_base/base_executor.py`, agents subclass with 3 lines |
 | **Deploy** | Generic `scripts/deploy.py` reads config, imports executor dynamically |
 | **A2UI** | Examples stored per-agent in `agents/<name>/examples/0.8/` |
-| **KPMG Widgets** | Shared branded patterns in `widgets/` — see `widgets/README.md` |
+| **KPMG Widgets** | Shared branded patterns in repo-root `widgets/` — see `../widgets/README.md` |
