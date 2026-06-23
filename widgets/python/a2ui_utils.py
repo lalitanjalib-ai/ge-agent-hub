@@ -22,6 +22,28 @@ A2UI_MESSAGE_KEYS = frozenset(
 )
 
 
+def _normalize_data_model(message: dict) -> dict:
+    """Fix List template data: adk web expects valueMap, not valueList."""
+    update = message.get("dataModelUpdate")
+    if not update:
+        return message
+
+    for entry in update.get("contents", []):
+        if "valueList" not in entry:
+            continue
+        items = entry.pop("valueList")
+        entry["valueMap"] = [
+            {
+                "key": item.get("key") or f"item_{index}",
+                "valueMap": item.get("valueMap", item),
+            }
+            for index, item in enumerate(items)
+            if isinstance(item, dict)
+        ]
+
+    return message
+
+
 def _wrap_a2ui_part(a2ui_message: dict) -> types.Part:
     """Wrap a single A2UI message for rendering in adk web."""
     datapart_json = json.dumps(
@@ -114,7 +136,10 @@ def a2ui_callback(
         if not a2ui_messages:
             continue
 
-        new_parts = [_wrap_a2ui_part(message) for message in a2ui_messages]
+        new_parts = [
+            _wrap_a2ui_part(_normalize_data_model(message))
+            for message in a2ui_messages
+        ]
         return LlmResponse(
             content=types.Content(role="model", parts=new_parts),
             custom_metadata={"a2a:response": "true"},

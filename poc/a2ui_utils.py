@@ -3,6 +3,8 @@ Convert A2UI JSON in LLM output into rendered components in adk web.
 
 From the ADK + A2UI Codelab:
 https://codelabs.developers.google.com/next26/adk-a2ui
+
+Handles both raw JSON arrays (codelab) and <a2ui-json> tagged blocks (A2UI SDK).
 """
 
 from __future__ import annotations
@@ -13,6 +15,32 @@ import re
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types
+
+A2UI_MESSAGE_KEYS = frozenset(
+    {"beginRendering", "surfaceUpdate", "dataModelUpdate", "deleteSurface"}
+)
+
+
+def _normalize_data_model(message: dict) -> dict:
+    """Fix List template data: adk web expects valueMap, not valueList."""
+    update = message.get("dataModelUpdate")
+    if not update:
+        return message
+
+    for entry in update.get("contents", []):
+        if "valueList" not in entry:
+            continue
+        items = entry.pop("valueList")
+        entry["valueMap"] = [
+            {
+                "key": item.get("key") or f"item_{index}",
+                "valueMap": item.get("valueMap", item),
+            }
+            for index, item in enumerate(items)
+            if isinstance(item, dict)
+        ]
+
+    return message
 
 
 def _wrap_a2ui_part(a2ui_message: dict) -> types.Part:
@@ -37,6 +65,56 @@ def _wrap_a2ui_part(a2ui_message: dict) -> types.Part:
     )
 
 
+def _extract_a2ui_messages(text: str) -> list[dict]:
+    """Parse A2UI JSON from LLM text, tolerating fences and tagged blocks."""
+    text = text.strip()
+    if not text:
+        return []
+
+    if not any(key in text for key in A2UI_MESSAGE_KEYS):
+        return []
+
+    if text.startswith("```"):
+        text = text.split("\n", 1)[-1]
+        if text.endswith("```"):
+            text = text[:-3].strip()
+
+    # A2UI SDK wraps each message in its own <a2ui-json> block.
+    if "<a2ui-json>" in text:
+        messages: list[dict] = []
+        for block in re.findall(r"<a2ui-json>(.*?)</a2ui-json>", text, re.DOTALL):
+            messages.extend(_extract_a2ui_messages(block.strip()))
+        return messages
+
+    json_start = None
+    for index, char in enumerate(text):
+        if char in ("[", "{"):
+            json_start = index
+            break
+    if json_start is None:
+        return []
+
+    json_text = text[json_start:]
+    try:
+        parsed, _ = json.JSONDecoder().raw_decode(json_text)
+    except json.JSONDecodeError:
+        try:
+            fixed = "[" + re.sub(r"\}\s*\{", "},{", json_text) + "]"
+            parsed, _ = json.JSONDecoder().raw_decode(fixed)
+        except json.JSONDecodeError:
+            return []
+
+    if not isinstance(parsed, list):
+        parsed = [parsed]
+
+    return [
+        message
+        for message in parsed
+        if isinstance(message, dict)
+        and any(key in message for key in A2UI_MESSAGE_KEYS)
+    ]
+
+
 def a2ui_callback(
     callback_context: CallbackContext,
     llm_response: LlmResponse,
@@ -51,58 +129,14 @@ def a2ui_callback(
         if not part.text:
             continue
 
-        text = part.text.strip()
-        if not text:
-            continue
-
-        if not any(
-            key in text
-            for key in ("beginRendering", "surfaceUpdate", "dataModelUpdate")
-        ):
-            continue
-
-        if text.startswith("```"):
-            text = text.split("\n", 1)[-1]
-            if text.endswith("```"):
-                text = text[:-3].strip()
-
-        json_start = None
-        for index, char in enumerate(text):
-            if char in ("[", "{"):
-                json_start = index
-                break
-        if json_start is None:
-            continue
-
-        json_text = text[json_start:]
-        try:
-            parsed, _ = json.JSONDecoder().raw_decode(json_text)
-        except json.JSONDecodeError:
-            try:
-                fixed = "[" + re.sub(r"\}\s*\{", "},{", json_text) + "]"
-                parsed, _ = json.JSONDecoder().raw_decode(fixed)
-            except json.JSONDecodeError:
-                continue
-
-        if not isinstance(parsed, list):
-            parsed = [parsed]
-
-        a2ui_keys = {
-            "beginRendering",
-            "surfaceUpdate",
-            "dataModelUpdate",
-            "deleteSurface",
-        }
-        a2ui_messages = [
-            message
-            for message in parsed
-            if isinstance(message, dict)
-            and any(key in message for key in a2ui_keys)
-        ]
+        a2ui_messages = _extract_a2ui_messages(part.text)
         if not a2ui_messages:
             continue
 
-        new_parts = [_wrap_a2ui_part(message) for message in a2ui_messages]
+        new_parts = [
+            _wrap_a2ui_part(_normalize_data_model(message))
+            for message in a2ui_messages
+        ]
         return LlmResponse(
             content=types.Content(role="model", parts=new_parts),
             custom_metadata={"a2a:response": "true"},

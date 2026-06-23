@@ -192,17 +192,19 @@
         },
         {
           "key": "resources",
-          "valueList": [
+          "valueMap": [
             {
+              "key": "auth-service",
               "valueMap": [
                 { "key": "name", "valueString": "auth-service" },
                 { "key": "type", "valueString": "Cloud Run" },
                 { "key": "region", "valueString": "us-west1" },
-                { "key": "status_icon", "valueString": "checkCircle" },
+                { "key": "status_icon", "valueString": "check" },
                 { "key": "issue", "valueString": "" }
               ]
             },
             {
+              "key": "events-db",
               "valueMap": [
                 { "key": "name", "valueString": "events-db" },
                 { "key": "type", "valueString": "Cloud SQL" },
@@ -212,11 +214,12 @@
               ]
             },
             {
+              "key": "analytics-pipeline",
               "valueMap": [
                 { "key": "name", "valueString": "analytics-pipeline" },
                 { "key": "type", "valueString": "Cloud Run" },
                 { "key": "region", "valueString": "us-west1" },
-                { "key": "status_icon", "valueString": "error" },
+                { "key": "status_icon", "valueString": "warning" },
                 { "key": "issue", "valueString": "CrashLoopBackOff: OOM killed" }
               ]
             }

@@ -13,7 +13,6 @@ Reference:
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -29,6 +28,13 @@ def main() -> int:
         load_dotenv(poc_root / ".env", override=True)
     except ImportError:
         pass
+
+    sys.path.insert(0, str(poc_root))
+    from ssl_config import apply_ssl_env, is_ssl_verify_disabled
+
+    ssl_disabled = apply_ssl_env()
+    if ssl_disabled:
+        print("  NOTE: Stop any running server (Ctrl+C) and restart if SSL errors persist.")
 
     project = os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("PROJECT_ID")
     if not project:
@@ -46,18 +52,19 @@ def main() -> int:
         pythonpath_parts.append(existing)
     env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
 
-    adk_cmd = shutil.which("adk")
-    base_cmd = [adk_cmd] if adk_cmd else [sys.executable, "-m", "google.adk.cli"]
-    # Run from poc/ with "." as the agent folder — avoids Windows path parsing
-    # issues that can split "...\dn-innov-a2ui\poc" into extra CLI arguments.
+    # Use python -m google.adk.cli (not adk.EXE) to avoid Windows glob expansion of "*".
     cmd = [
-        *base_cmd,
+        sys.executable,
+        "-m",
+        "google.adk.cli",
         "web",
         ".",
         "--port",
         "8080",
         "--allow_origins",
-        "*",
+        "http://127.0.0.1:8080",
+        "--allow_origins",
+        "http://localhost:8080",
         "--reload_agents",
     ]
 
@@ -65,6 +72,10 @@ def main() -> int:
     print("  A2UI Local Dev (ADK web)")
     print(f"  Project: {project}")
     print(f"  Agent:   cloud_dashboard  (poc/)")
+    if ssl_disabled or is_ssl_verify_disabled():
+        print("  SSL:     verification disabled (SSL_VERIFY=false)")
+    elif os.environ.get("SSL_CERT_FILE"):
+        print(f"  SSL:     custom CA ({os.environ['SSL_CERT_FILE']})")
     print("  URL:     http://127.0.0.1:8080")
     print()
     print("  Sample prompts:")
@@ -74,7 +85,7 @@ def main() -> int:
     print("=" * 72)
 
     try:
-        return subprocess.call(cmd, cwd=poc_root, env=env)
+        return subprocess.call(cmd, cwd=poc_root, env=env, shell=False)
     except KeyboardInterrupt:
         return 0
 
