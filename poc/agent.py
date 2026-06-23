@@ -98,8 +98,10 @@ instruction = schema_manager.generate_system_prompt(
         "not valueList. Use standard icon names: check, warning, info. "
         "Do NOT use markdown formatting in text values. Use the usageHint "
         "property for heading levels instead. "
-        "Respond ONLY with the A2UI JSON array. Do NOT include any text "
-        "outside the JSON. Put all explanations into Text components."
+        "Output ONLY A2UI protocol messages (beginRendering, surfaceUpdate, "
+        "dataModelUpdate) inside <a2ui-json> tags. Never output kind/data/"
+        "metadata wire-format wrappers — adk web renders those as raw JSON. "
+        "Put all explanations into Text components."
     ),
     include_schema=True,
     include_examples=True,

@@ -75,6 +75,7 @@ poc/
 | `CERTIFICATE_VERIFY_FAILED` | Corporate proxy / custom CA | Add `SSL_VERIFY=false` to `.env`, or set `REQUESTS_CA_BUNDLE` to your CA `.pem` |
 | Empty bubble after tool call | A2UI SDK uses `<a2ui-json>` tags; old callback only parsed the first block | Fixed in `a2ui_utils.py` — restart server, **+New Session**, hard-refresh browser |
 | Cards show `(empty)` for list items | List `dataBinding` needs `valueMap` (keyed map), not `valueList` | Fixed in KPMG example + callback auto-converts `valueList` |
+| Raw JSON in chat bubble | Model emitted wire-format (`kind`/`mimeType`) or concatenated JSON the old parser missed | Fixed in `a2ui_utils.py` — **+New Session** after restart |
 | `unexpected extra arguments (agent.py ...)` | `--allow_origins *` glob-expands to all files in `poc/` | Use `python scripts/run_local.py` (fixed — uses explicit localhost origins) |
 | `unexpected extra arguments (poc widgets)` | Full Windows path split by `adk.EXE` | Same — script runs `adk web .` from inside `poc/` |
 | Raw JSON in chat | Missing render callback | `a2ui_callback` is already wired in `agent.py` |
