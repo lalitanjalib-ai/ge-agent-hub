@@ -121,6 +121,28 @@
         "dismissAction": { "type": "string" }
       },
       "required": ["title", "message"]
+    },
+    "KpmgResourceDashboard": {
+      "type": "object",
+      "description": "List of resource cards with status icons, type, region, issue text, and drill-down button. Based on the ADK+A2UI codelab cloud dashboard pattern.",
+      "properties": {
+        "title": { "type": "string" },
+        "summary": {
+          "type": "object",
+          "properties": {
+            "literalString": { "type": "string" },
+            "path": { "type": "string" }
+          }
+        },
+        "resources": {
+          "type": "object",
+          "description": "List of resources bound via data model path.",
+          "properties": {
+            "path": { "type": "string" }
+          }
+        }
+      },
+      "required": ["title", "resources"]
     }
   },
   "kpmgTheme": {

@@ -1,10 +1,5 @@
+# Local dev
+.env
 .venv/
-.venv311/
 __pycache__/
 *.pyc
-*.pyo
-.env
-*.egg-info/
-dist/
-build/
-.pytest_cache/

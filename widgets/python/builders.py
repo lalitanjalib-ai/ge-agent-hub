@@ -12,6 +12,18 @@ from typing import Any
 
 from widgets.python.theme import KPMG_SURFACE_STYLES
 
+STATUS_ICON_MAP = {
+    "healthy": "checkCircle",
+    "warning": "warning",
+    "error": "error",
+    "info": "info",
+}
+
+
+def resource_status_icon(status: str) -> str:
+    """Map a resource status label to a Material icon name."""
+    return STATUS_ICON_MAP.get(status.lower(), "info")
+
 
 def begin_surface(
     surface_id: str,

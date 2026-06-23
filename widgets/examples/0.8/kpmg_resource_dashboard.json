@@ -1,0 +1,228 @@
+[
+  {
+    "beginRendering": {
+      "surfaceId": "kpmg-resource-dashboard",
+      "root": "main_column",
+      "styles": {
+        "primaryColor": "#00338D",
+        "font": "Roboto"
+      }
+    }
+  },
+  {
+    "surfaceUpdate": {
+      "surfaceId": "kpmg-resource-dashboard",
+      "components": [
+        {
+          "id": "main_column",
+          "component": {
+            "Column": {
+              "children": {
+                "explicitList": [
+                  "page_title",
+                  "summary_text",
+                  "resource_list"
+                ]
+              },
+              "alignment": "stretch"
+            }
+          }
+        },
+        {
+          "id": "page_title",
+          "component": {
+            "Text": {
+              "text": {
+                "literalString": "Cloud Resource Dashboard"
+              },
+              "usageHint": "h1"
+            }
+          }
+        },
+        {
+          "id": "summary_text",
+          "component": {
+            "Text": {
+              "text": {
+                "path": "/summary"
+              },
+              "usageHint": "h5"
+            }
+          }
+        },
+        {
+          "id": "resource_list",
+          "component": {
+            "List": {
+              "direction": "vertical",
+              "children": {
+                "template": {
+                  "componentId": "resource_card_template",
+                  "dataBinding": "/resources"
+                }
+              }
+            }
+          }
+        },
+        {
+          "id": "resource_card_template",
+          "component": {
+            "Card": {
+              "child": "resource_card_column"
+            }
+          }
+        },
+        {
+          "id": "resource_card_column",
+          "component": {
+            "Column": {
+              "children": {
+                "explicitList": [
+                  "resource_header_row",
+                  "resource_type_text",
+                  "resource_region_text",
+                  "resource_issue_text",
+                  "resource_action_button"
+                ]
+              },
+              "alignment": "stretch"
+            }
+          }
+        },
+        {
+          "id": "resource_header_row",
+          "component": {
+            "Row": {
+              "children": {
+                "explicitList": [
+                  "resource_status_icon",
+                  "resource_name_text"
+                ]
+              },
+              "alignment": "center"
+            }
+          }
+        },
+        {
+          "id": "resource_status_icon",
+          "component": {
+            "Icon": {
+              "name": {
+                "path": "/status_icon"
+              }
+            }
+          }
+        },
+        {
+          "id": "resource_name_text",
+          "component": {
+            "Text": {
+              "text": {
+                "path": "/name"
+              },
+              "usageHint": "h3"
+            }
+          }
+        },
+        {
+          "id": "resource_type_text",
+          "component": {
+            "Text": {
+              "text": {
+                "path": "/type"
+              },
+              "usageHint": "caption"
+            }
+          }
+        },
+        {
+          "id": "resource_region_text",
+          "component": {
+            "Text": {
+              "text": {
+                "path": "/region"
+              },
+              "usageHint": "caption"
+            }
+          }
+        },
+        {
+          "id": "resource_issue_text",
+          "component": {
+            "Text": {
+              "text": {
+                "path": "/issue"
+              }
+            }
+          }
+        },
+        {
+          "id": "resource_action_button",
+          "component": {
+            "Button": {
+              "child": "resource_action_text",
+              "action": {
+                "name": "view_resource_details"
+              },
+              "variant": "secondary"
+            }
+          }
+        },
+        {
+          "id": "resource_action_text",
+          "component": {
+            "Text": {
+              "text": {
+                "literalString": "View Details"
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "dataModelUpdate": {
+      "surfaceId": "kpmg-resource-dashboard",
+      "path": "/",
+      "contents": [
+        {
+          "key": "summary",
+          "valueString": "3 resources found: 1 healthy, 1 warning, 1 error."
+        },
+        {
+          "key": "resources",
+          "valueList": [
+            {
+              "valueMap": [
+                { "key": "name", "valueString": "auth-service" },
+                { "key": "type", "valueString": "Cloud Run" },
+                { "key": "region", "valueString": "us-west1" },
+                { "key": "status_icon", "valueString": "checkCircle" },
+                { "key": "issue", "valueString": "" }
+              ]
+            },
+            {
+              "valueMap": [
+                { "key": "name", "valueString": "events-db" },
+                { "key": "type", "valueString": "Cloud SQL" },
+                { "key": "region", "valueString": "us-east1" },
+                { "key": "status_icon", "valueString": "warning" },
+                { "key": "issue", "valueString": "Storage usage at 92%" }
+              ]
+            },
+            {
+              "valueMap": [
+                { "key": "name", "valueString": "analytics-pipeline" },
+                { "key": "type", "valueString": "Cloud Run" },
+                { "key": "region", "valueString": "us-west1" },
+                { "key": "status_icon", "valueString": "error" },
+                { "key": "issue", "valueString": "CrashLoopBackOff: OOM killed" }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+]

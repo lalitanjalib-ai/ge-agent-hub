@@ -9,6 +9,7 @@ All widgets compose **standard A2UI v0.8 catalog components** (`Card`, `Column`,
 | Resource | URL |
 |----------|-----|
 | Gemini Enterprise + A2UI integration | [Google Cloud Blog](https://cloud.google.com/blog/topics/developers-practitioners/guide-to-gemini-enterprise-and-a2ui-integration) |
+| ADK + A2UI Codelab (local dev) | [Google Codelabs](https://codelabs.developers.google.com/next26/adk-a2ui) |
 | A2UI Composer (visual prototyping) | [a2ui-composer.ag-ui.com](https://a2ui-composer.ag-ui.com/) |
 | Authoring custom components | [a2ui.org/guides/authoring-components](https://a2ui.org/guides/authoring-components/#2-implementing-the-component-client) |
 
@@ -25,10 +26,12 @@ widgets/
 │   ├── kpmg_status_panel.json
 │   ├── kpmg_data_field_row.json
 │   ├── kpmg_confirmation_modal.json
-│   └── kpmg_action_bar.json
+│   ├── kpmg_action_bar.json
+│   └── kpmg_resource_dashboard.json
 ├── python/
 │   ├── theme.py                       # Brand tokens (#00338D, Roboto, etc.)
 │   ├── builders.py                    # Programmatic payload builders
+│   ├── a2ui_utils.py                  # adk web rendering callback (from codelab)
 │   └── provider.py                    # A2uiSchemaManager catalog integration
 └── client/
     └── README.md                      # Custom frontend registration (Lit/Angular)
@@ -44,6 +47,7 @@ widgets/
 | **KpmgDataFieldRow** | Read-only icon + label + value rows | `kpmg_data_field_row.json` |
 | **KpmgConfirmationModal** | Confirm/cancel modal dialog | `kpmg_confirmation_modal.json` |
 | **KpmgActionBar** | Primary + secondary action buttons | `kpmg_action_bar.json` |
+| **KpmgResourceDashboard** | Resource list with status icons (codelab pattern) | `kpmg_resource_dashboard.json` |
 
 ### KPMG theme
 
@@ -101,6 +105,35 @@ Register the agent with A2UI extension support (already handled by `scripts/depl
 - Catalog: `https://a2ui.org/specification/v0_8/standard_catalog_definition.json`
 
 Gemini Enterprise validates payloads against the **standard catalog** and renders them in its built-in A2UI renderer.
+
+## Local development with adk web
+
+The [ADK + A2UI Codelab](https://codelabs.developers.google.com/next26/adk-a2ui) shows how to render A2UI in `adk web` during development. This repo provides:
+
+1. **`poc/a2ui_utils.py`** — `a2ui_callback` converts LLM JSON output into rendered UI parts (codelab pattern)
+2. **`poc/agent.py`** — sample agent using `A2uiSchemaManager` + `KpmgWidgetsCatalog`
+
+```bash
+cd poc
+uv sync
+cp .env.example .env   # set GOOGLE_CLOUD_PROJECT
+uv run python scripts/run_local.py
+```
+
+Open http://127.0.0.1:8080, select the **poc** agent, and try:
+- `What's running in my project?`
+- `Does anything need my attention?`
+
+### Using a2ui_callback in your agent
+
+```python
+from a2ui_utils import a2ui_callback
+
+root_agent = Agent(
+    ...
+    after_model_callback=a2ui_callback,
+)
+```
 
 ## Programmatic builders
 

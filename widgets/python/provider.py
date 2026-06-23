@@ -21,6 +21,17 @@ CATALOG_PATH = WIDGETS_ROOT / "catalog" / "kpmg_catalog_definition.json"
 KPMG_CATALOG_ID = "https://kpmg.internal/a2ui/v0_8/kpmg_widgets_catalog_definition.json"
 
 
+def _to_sdk_examples_path(path: Path) -> str:
+    """Return a path string the a2ui-agent-sdk accepts on all platforms."""
+    resolved = path.resolve()
+    try:
+        rel = os.path.relpath(resolved)
+    except ValueError:
+        rel = str(resolved)
+    # Forward slashes, relative when possible — avoids Windows drive-letter urlparse issues.
+    return rel.replace("\\", "/")
+
+
 class KpmgWidgetsCatalog:
     """Provider that extends BasicCatalog with KPMG widget examples."""
 
@@ -56,25 +67,24 @@ class KpmgWidgetsCatalog:
         Returns:
             Catalog config dict compatible with A2uiSchemaManager.
         """
-        examples_paths: list[str] = []
+        local_paths: list[Path] = []
 
         if include_kpmg_examples:
-            examples_paths.append(str(cls.get_examples_path(version)))
+            local_paths.append(cls.get_examples_path(version))
 
         if agent_examples_path:
-            examples_paths.append(str(agent_examples_path))
+            local_paths.append(Path(agent_examples_path))
 
-        # BasicCatalog accepts a single examples_path; use merged temp dir logic
-        # via the first path when only one, or agent path with KPMG as secondary
-        # by passing a comma-joined parent — SDK expects one dir, so prefer a
-        # combined approach: agent examples take precedence, KPMG supplements.
-        primary_examples = examples_paths[0] if examples_paths else str(EXAMPLES_DIR)
-        if len(examples_paths) > 1:
-            primary_examples = _merge_example_dirs(examples_paths)
+        if len(local_paths) > 1:
+            examples_path = _to_sdk_examples_path(_merge_example_dirs(local_paths))
+        elif local_paths:
+            examples_path = _to_sdk_examples_path(local_paths[0])
+        else:
+            examples_path = _to_sdk_examples_path(EXAMPLES_DIR)
 
         return BasicCatalog.get_config(
             version=version,
-            examples_path=primary_examples,
+            examples_path=examples_path,
         )
 
     @classmethod
@@ -105,7 +115,7 @@ class KpmgWidgetsCatalog:
         ]
 
 
-def _merge_example_dirs(paths: list[str]) -> str:
+def _merge_example_dirs(paths: list[Path]) -> Path:
     """
     Return a directory containing example JSON from all paths.
 
@@ -122,4 +132,4 @@ def _merge_example_dirs(paths: list[str]) -> str:
             continue
         for json_file in source.glob("*.json"):
             shutil.copy2(json_file, merged / json_file.name)
-    return str(merged)
+    return merged
