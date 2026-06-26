@@ -4,7 +4,7 @@ Start adk web for local A2UI testing (codelab workflow).
 
 Usage:
     cd poc
-    python scripts/run_local.py
+    python run_local.py
 
 Reference:
     https://codelabs.developers.google.com/next26/adk-a2ui
@@ -19,7 +19,7 @@ from pathlib import Path
 
 
 def main() -> int:
-    poc_root = Path(__file__).resolve().parent.parent
+    poc_root = Path(__file__).resolve().parent
     repo_root = poc_root.parent
 
     try:
@@ -52,7 +52,8 @@ def main() -> int:
         pythonpath_parts.append(existing)
     env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
 
-    # Use python -m google.adk.cli (not adk.EXE) to avoid Windows glob expansion of "*".
+    # ADK lists each subdirectory of agents_dir as an app. Run from the repo
+    # root so the agent app is "poc" (poc/agent.py), not a stray "scripts" folder.
     cmd = [
         sys.executable,
         "-m",
@@ -68,15 +69,18 @@ def main() -> int:
         "--reload_agents",
     ]
 
+    dev_ui_url = "http://127.0.0.1:8080/dev-ui/?app=poc"
+
     print("=" * 72)
     print("  A2UI Local Dev (ADK web)")
     print(f"  Project: {project}")
-    print(f"  Agent:   cloud_dashboard  (poc/)")
+    print("  Agent:   cloud_dashboard  (poc/agent.py)")
+    print("  App:     poc  (select in dropdown, or use URL below)")
     if ssl_disabled or is_ssl_verify_disabled():
         print("  SSL:     verification disabled (SSL_VERIFY=false)")
     elif os.environ.get("SSL_CERT_FILE"):
         print(f"  SSL:     custom CA ({os.environ['SSL_CERT_FILE']})")
-    print("  URL:     http://127.0.0.1:8080")
+    print(f"  URL:     {dev_ui_url}")
     print()
     print("  Sample prompts:")
     print("    - What's running in my project?")
@@ -85,7 +89,7 @@ def main() -> int:
     print("=" * 72)
 
     try:
-        return subprocess.call(cmd, cwd=poc_root, env=env, shell=False)
+        return subprocess.call(cmd, cwd=repo_root, env=env, shell=False)
     except KeyboardInterrupt:
         return 0
 

@@ -5,9 +5,9 @@ Codelab: https://codelabs.developers.google.com/next26/adk-a2ui
 
 Run:
     cd poc
-    python scripts/run_local.py
+    python run_local.py
 
-Then open http://127.0.0.1:8080 and select this agent folder.
+Then open http://127.0.0.1:8080/dev-ui/?app=poc (or select **poc** in the dropdown).
 """
 
 from __future__ import annotations
