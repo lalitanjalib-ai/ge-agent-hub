@@ -12,6 +12,7 @@ from widgets.python.builders import (
     resource_entry,
     resource_status_icon,
     resource_status_label,
+    resource_detail,
     status_panel,
     surface_messages,
 )
@@ -31,6 +32,7 @@ __all__ = [
     "resource_entry",
     "resource_status_icon",
     "resource_status_label",
+    "resource_detail",
     "status_panel",
     "confirmation_modal",
     "action_bar",

@@ -37,6 +37,34 @@ def resource_status_label(status: str) -> str:
     return STATUS_LABEL_MAP.get(status.lower(), status.title())
 
 
+VIEW_RESOURCE_ACTION: dict[str, Any] = {
+    "name": "view_resource_details",
+    "context": [
+        {"key": "name", "value": {"path": "/name"}},
+        {"key": "type", "value": {"path": "/type"}},
+        {"key": "region", "value": {"path": "/region"}},
+        {"key": "status", "value": {"path": "/status_label"}},
+    ],
+}
+
+
+_DETAIL_FIELD_SPECS: list[tuple[str, str, str]] = [
+    ("type", "Service Type", "category"),
+    ("region", "Region", "place"),
+    ("status", "Status", "info"),
+    ("cpu", "CPU", "memory"),
+    ("memory", "Memory", "memory"),
+    ("instances", "Instances", "dns"),
+    ("url", "URL", "link"),
+    ("tier", "Tier", "layers"),
+    ("storage", "Storage", "storage"),
+    ("connections", "Connections", "hub"),
+    ("version", "Version", "info"),
+    ("last_deployed", "Last Deployed", "schedule"),
+    ("issue", "Issue", "warning"),
+]
+
+
 def begin_surface(
     surface_id: str,
     root: str,
@@ -863,15 +891,18 @@ def _resource_dashboard_components() -> list[dict[str, Any]]:
             "component": {
                 "Button": {
                     "child": "resource_action_text",
-                    "action": {"name": "view_resource_details"},
-                    "variant": "secondary",
+                    "primary": True,
+                    "action": VIEW_RESOURCE_ACTION,
                 }
             },
         },
         {
             "id": "resource_action_text",
             "component": {
-                "Text": {"text": {"literalString": "View Details"}}
+                "Text": {
+                    "text": {"literalString": "View Details"},
+                    "usageHint": "h5",
+                }
             },
         },
     ]
@@ -960,6 +991,151 @@ def resource_dashboard(
         root="main_column",
         components=_resource_dashboard_components(),
         data_contents=_resource_dashboard_data(resource_list, summary),
+    )
+
+
+def resource_detail(
+    resource: dict[str, Any],
+    surface_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """KPMG detail card for a single cloud resource (KpmgDataFieldRow pattern)."""
+    name = str(resource["name"])
+    surface_id = surface_id or f"kpmg-resource-detail-{name}"
+
+    child_ids = ["detail_header_row", "detail_status_row"]
+    field_ids: list[str] = []
+    components: list[dict[str, Any]] = [
+        {
+            "id": "detail_column",
+            "component": {
+                "Column": {
+                    "children": {"explicitList": child_ids},
+                    "alignment": "stretch",
+                }
+            },
+        },
+        {
+            "id": "detail_header_row",
+            "component": {
+                "Row": {
+                    "children": {
+                        "explicitList": ["detail_title", "detail_kpmg_brand"]
+                    },
+                    "alignment": "center",
+                    "distribution": "spaceBetween",
+                }
+            },
+        },
+        {
+            "id": "detail_title",
+            "component": {
+                "Text": {
+                    "text": {"literalString": name},
+                    "usageHint": "h2",
+                }
+            },
+        },
+        {
+            "id": "detail_kpmg_brand",
+            "component": {
+                "Text": {
+                    "text": {"literalString": "KPMG"},
+                    "usageHint": "caption",
+                }
+            },
+        },
+        {
+            "id": "detail_status_row",
+            "component": {
+                "Row": {
+                    "children": {
+                        "explicitList": ["detail_status_icon", "detail_status_text"]
+                    },
+                    "alignment": "center",
+                }
+            },
+        },
+        {
+            "id": "detail_status_icon",
+            "component": {
+                "Icon": {
+                    "name": {
+                        "literalString": resource_status_icon(
+                            str(resource.get("status", ""))
+                        )
+                    }
+                }
+            },
+        },
+        {
+            "id": "detail_status_text",
+            "component": {
+                "Text": {
+                    "text": {
+                        "literalString": resource_status_label(
+                            str(resource.get("status", ""))
+                        )
+                    },
+                    "usageHint": "h5",
+                }
+            },
+        },
+    ]
+
+    for field_key, label, icon in _DETAIL_FIELD_SPECS:
+        if field_key not in resource or resource[field_key] in (None, ""):
+            continue
+        row_id = f"detail_{field_key}"
+        field_ids.append(row_id)
+        components.extend(data_field_row(row_id, label, f"/{field_key}", icon=icon))
+
+    child_ids.extend(field_ids)
+    if resource.get("usage_percent"):
+        child_ids.extend(["detail_usage_label", "detail_usage_slider"])
+        components.extend(
+            [
+                {
+                    "id": "detail_usage_label",
+                    "component": {
+                        "Text": {
+                            "text": {
+                                "literalString": (
+                                    f"Storage usage: {resource['usage_percent']}%"
+                                )
+                            },
+                            "usageHint": "caption",
+                        }
+                    },
+                },
+                {
+                    "id": "detail_usage_slider",
+                    "component": {
+                        "Slider": {
+                            "value": {"path": "/usage_percent"},
+                            "minValue": 0,
+                            "maxValue": 100,
+                        }
+                    },
+                },
+            ]
+        )
+
+    components[0]["component"]["Column"]["children"]["explicitList"] = child_ids
+
+    data_contents: list[dict[str, Any]] = []
+    for key, value in resource.items():
+        if value in (None, ""):
+            continue
+        if key == "usage_percent":
+            data_contents.append({"key": key, "valueNumber": int(value)})
+        else:
+            data_contents.append({"key": key, "valueString": str(value)})
+
+    return surface_messages(
+        surface_id=surface_id,
+        root="detail_column",
+        components=components,
+        data_contents=data_contents,
     )
 
 

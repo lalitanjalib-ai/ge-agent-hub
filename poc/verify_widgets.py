@@ -29,7 +29,11 @@ def main() -> int:
     from a2ui.schema.constants import VERSION_0_8
     from a2ui.schema.manager import A2uiSchemaManager
     from widgets.python.a2ui_utils import _extract_a2ui_messages
-    from widgets.python.builders import resource_dashboard, resource_status_icon
+    from widgets.python.builders import (
+        resource_dashboard,
+        resource_detail,
+        resource_status_icon,
+    )
     from widgets.python.provider import EXAMPLES_DIR, KpmgWidgetsCatalog
 
     errors: list[str] = []
@@ -108,6 +112,51 @@ def main() -> int:
         errors.append(f"Unexpected agent name: {root_agent.name}")
     if root_agent.after_model_callback.__name__ != "cloud_dashboard_callback":
         errors.append("Agent must use cloud_dashboard_callback for KPMG dashboard rendering")
+    if root_agent.before_model_callback.__name__ != "before_model_callback":
+        errors.append("Agent must use before_model_callback for View Details actions")
+
+    from action_utils import extract_user_action, normalize_action_context
+    from google.adk.models.llm_request import LlmRequest
+    from google.genai import types
+
+    action_request = LlmRequest(
+        contents=[
+            types.Content(
+                role="user",
+                parts=[
+                    types.Part(
+                        text=(
+                            '{"userAction": {"name": "view_resource_details", '
+                            '"context": {"name": "events-db", "type": "Cloud SQL"}}}'
+                        )
+                    )
+                ],
+            )
+        ]
+    )
+    parsed_action = extract_user_action(action_request)
+    if not parsed_action or parsed_action.get("name") != "view_resource_details":
+        errors.append("extract_user_action failed to parse view_resource_details")
+    context = normalize_action_context(parsed_action.get("context") if parsed_action else {})
+    if context.get("name") != "events-db":
+        errors.append("normalize_action_context failed")
+
+    detail = resource_detail(RESOURCES[1])
+    detail_surface = next(m for m in detail if "surfaceUpdate" in m)
+    detail_ids = {c["id"] for c in detail_surface["surfaceUpdate"]["components"]}
+    if "detail_title" not in detail_ids:
+        errors.append("resource_detail missing detail_title component")
+
+    button = next(
+        c
+        for c in built_surface["surfaceUpdate"]["components"]
+        if c["id"] == "resource_action_button"
+    )
+    action = button["component"]["Button"]["action"]
+    if action.get("name") != "view_resource_details":
+        errors.append("resource_action_button missing view_resource_details action")
+    if not action.get("context"):
+        errors.append("resource_action_button missing action context")
 
     if errors:
         for err in errors:

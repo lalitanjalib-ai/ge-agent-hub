@@ -45,6 +45,15 @@ RESOURCES = [
 
 
 _pending_resources: list[dict] | None = None
+_pending_detail: dict | None = None
+
+
+def find_resource(name: str) -> dict | None:
+    """Look up a resource by name."""
+    for resource in RESOURCES:
+        if resource["name"] == name:
+            return dict(resource)
+    return None
 
 
 def get_resources() -> list[dict]:
@@ -59,4 +68,22 @@ def consume_pending_resources() -> list[dict] | None:
     global _pending_resources
     pending = _pending_resources
     _pending_resources = None
+    return pending
+
+
+def get_resource_details(name: str) -> dict:
+    """Get detailed information for a single cloud resource by name."""
+    global _pending_detail
+    resource = find_resource(name)
+    if resource is None:
+        return {"error": f"Resource '{name}' was not found."}
+    _pending_detail = resource
+    return resource
+
+
+def consume_pending_detail() -> dict | None:
+    """Return resource details fetched by get_resource_details, once."""
+    global _pending_detail
+    pending = _pending_detail
+    _pending_detail = None
     return pending

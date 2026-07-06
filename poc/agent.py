@@ -38,8 +38,8 @@ from a2ui.schema.manager import A2uiSchemaManager
 from a2ui.schema.common_modifiers import remove_strict_validation
 from a2ui.schema.constants import VERSION_0_8
 
-from dashboard_callback import cloud_dashboard_callback
-from resources import get_resources
+from dashboard_callback import before_model_callback, cloud_dashboard_callback
+from resources import get_resource_details, get_resources
 from ssl_config import apply_ssl_env, gemini_http_options
 from widgets.python.provider import KpmgWidgetsCatalog
 from widgets.python.theme import KPMG_SURFACE_STYLES
@@ -93,7 +93,10 @@ instruction = schema_manager.generate_system_prompt(
         "current state."
     ),
     workflow_description=(
-        "Analyze the user's request and return structured UI when appropriate."
+        "When users ask about cloud resources, call get_resources. When they "
+        "click View Details on a resource card, the view_resource_details "
+        "action is handled automatically — you may also call "
+        "get_resource_details(name) if asked for a single resource."
     ),
     ui_description=(
         "Use KPMG-branded A2UI surfaces with beginRendering styles: "
@@ -101,7 +104,9 @@ instruction = schema_manager.generate_system_prompt(
         "When displaying cloud resources after get_resources, the UI is rendered "
         "from the shared KpmgResourceDashboard widget (KpmgBrandedHeader + "
         "KpmgMetricCard summary row + KpmgStatusPanel/KpmgDataFieldRow resource "
-        "cards). Follow that composition in examples. "
+        "cards). View Details buttons use action name view_resource_details with "
+        "context paths for name, type, region, and status. "
+        "Detail views use KpmgDataFieldRow for all resource attributes. "
         "For List templates, bind list data with valueMap (keyed entries), "
         "not valueList. Use standard icon names: check, warning, info. "
         "Do NOT use markdown formatting in text values. Use the usageHint "
@@ -121,6 +126,7 @@ root_agent = Agent(
     name="cloud_dashboard",
     description="A cloud infrastructure assistant that renders rich A2UI interfaces.",
     instruction=instruction,
-    tools=[get_resources],
+    tools=[get_resources, get_resource_details],
+    before_model_callback=before_model_callback,
     after_model_callback=cloud_dashboard_callback,
 )

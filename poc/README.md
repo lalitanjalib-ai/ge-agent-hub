@@ -119,9 +119,13 @@ The A2UI SDK instructs the model to emit protocol messages inside `<a2ui-json>` 
 
 `get_resources()` returns three mock resources with `healthy`, `warning`, and `error` statuses. The LLM uses this data to populate `dataModelUpdate` bindings.
 
-### 3. Render callback (`dashboard_callback.py` + `widgets/python/a2ui_utils.py`)
+### 3. Render callbacks (`dashboard_callback.py` + `widgets/python/a2ui_utils.py`)
 
-After `get_resources` runs, `cloud_dashboard_callback` builds the KPMG dashboard programmatically from `widgets.python.builders.resource_dashboard` (BrandedHeader + MetricCard row + StatusPanel/DataFieldRow resource cards). Other prompts still use `a2ui_callback` for model-generated UI.
+After `get_resources` runs, `cloud_dashboard_callback` builds the KPMG dashboard programmatically from `widgets.python.builders.resource_dashboard`.
+
+**View Details buttons** send a `view_resource_details` userAction with resource context (`name`, `type`, `region`, `status`). `before_model_callback` intercepts the click and renders a KPMG detail card via `resource_detail()` without an extra LLM call.
+
+Other prompts still use `a2ui_callback` for model-generated UI.
 
 - `<a2ui-json>` tagged blocks (one message per tag)
 - Raw JSON arrays and concatenated `{...}{...}` objects (codelab style)

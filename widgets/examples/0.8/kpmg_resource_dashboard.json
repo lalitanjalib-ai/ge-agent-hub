@@ -489,10 +489,36 @@
           "component": {
             "Button": {
               "child": "resource_action_text",
+              "primary": true,
               "action": {
-                "name": "view_resource_details"
-              },
-              "variant": "secondary"
+                "name": "view_resource_details",
+                "context": [
+                  {
+                    "key": "name",
+                    "value": {
+                      "path": "/name"
+                    }
+                  },
+                  {
+                    "key": "type",
+                    "value": {
+                      "path": "/type"
+                    }
+                  },
+                  {
+                    "key": "region",
+                    "value": {
+                      "path": "/region"
+                    }
+                  },
+                  {
+                    "key": "status",
+                    "value": {
+                      "path": "/status_label"
+                    }
+                  }
+                ]
+              }
             }
           }
         },
@@ -502,7 +528,8 @@
             "Text": {
               "text": {
                 "literalString": "View Details"
-              }
+              },
+              "usageHint": "h5"
             }
           }
         }
