@@ -19,8 +19,8 @@
             "Column": {
               "children": {
                 "explicitList": [
-                  "page_title",
-                  "summary_text",
+                  "header_card",
+                  "metrics_row",
                   "resource_list"
                 ]
               },
@@ -29,24 +29,204 @@
           }
         },
         {
-          "id": "page_title",
+          "id": "header_card",
+          "component": {
+            "Card": {
+              "child": "header_column"
+            }
+          }
+        },
+        {
+          "id": "header_column",
+          "component": {
+            "Column": {
+              "children": {
+                "explicitList": [
+                  "header_icon",
+                  "header_title",
+                  "header_subtitle"
+                ]
+              },
+              "alignment": "center"
+            }
+          }
+        },
+        {
+          "id": "header_icon",
+          "component": {
+            "Icon": {
+              "name": {
+                "literalString": "cloud"
+              }
+            }
+          }
+        },
+        {
+          "id": "header_title",
           "component": {
             "Text": {
               "text": {
                 "literalString": "Cloud Resource Dashboard"
               },
-              "usageHint": "h1"
+              "usageHint": "h2"
             }
           }
         },
         {
-          "id": "summary_text",
+          "id": "header_subtitle",
           "component": {
             "Text": {
               "text": {
                 "path": "/summary"
               },
-              "usageHint": "h5"
+              "usageHint": "h4"
+            }
+          }
+        },
+        {
+          "id": "metrics_row",
+          "component": {
+            "Row": {
+              "children": {
+                "explicitList": [
+                  "metric_healthy",
+                  "metric_warning",
+                  "metric_error"
+                ]
+              },
+              "distribution": "spaceEvenly"
+            }
+          }
+        },
+        {
+          "id": "metric_healthy",
+          "component": {
+            "Card": {
+              "child": "metric_healthy_col"
+            }
+          }
+        },
+        {
+          "id": "metric_healthy_col",
+          "component": {
+            "Column": {
+              "children": {
+                "explicitList": [
+                  "metric_healthy_label",
+                  "metric_healthy_value"
+                ]
+              },
+              "alignment": "center"
+            }
+          }
+        },
+        {
+          "id": "metric_healthy_label",
+          "component": {
+            "Text": {
+              "text": {
+                "path": "/metrics/healthy/label"
+              },
+              "usageHint": "caption"
+            }
+          }
+        },
+        {
+          "id": "metric_healthy_value",
+          "component": {
+            "Text": {
+              "text": {
+                "path": "/metrics/healthy/value"
+              },
+              "usageHint": "h2"
+            }
+          }
+        },
+        {
+          "id": "metric_warning",
+          "component": {
+            "Card": {
+              "child": "metric_warning_col"
+            }
+          }
+        },
+        {
+          "id": "metric_warning_col",
+          "component": {
+            "Column": {
+              "children": {
+                "explicitList": [
+                  "metric_warning_label",
+                  "metric_warning_value"
+                ]
+              },
+              "alignment": "center"
+            }
+          }
+        },
+        {
+          "id": "metric_warning_label",
+          "component": {
+            "Text": {
+              "text": {
+                "path": "/metrics/warning/label"
+              },
+              "usageHint": "caption"
+            }
+          }
+        },
+        {
+          "id": "metric_warning_value",
+          "component": {
+            "Text": {
+              "text": {
+                "path": "/metrics/warning/value"
+              },
+              "usageHint": "h2"
+            }
+          }
+        },
+        {
+          "id": "metric_error",
+          "component": {
+            "Card": {
+              "child": "metric_error_col"
+            }
+          }
+        },
+        {
+          "id": "metric_error_col",
+          "component": {
+            "Column": {
+              "children": {
+                "explicitList": [
+                  "metric_error_label",
+                  "metric_error_value"
+                ]
+              },
+              "alignment": "center"
+            }
+          }
+        },
+        {
+          "id": "metric_error_label",
+          "component": {
+            "Text": {
+              "text": {
+                "path": "/metrics/error/label"
+              },
+              "usageHint": "caption"
+            }
+          }
+        },
+        {
+          "id": "metric_error_value",
+          "component": {
+            "Text": {
+              "text": {
+                "path": "/metrics/error/value"
+              },
+              "usageHint": "h2"
             }
           }
         },
@@ -78,10 +258,12 @@
             "Column": {
               "children": {
                 "explicitList": [
-                  "resource_header_row",
-                  "resource_type_text",
-                  "resource_region_text",
+                  "resource_card_header_row",
+                  "resource_status_row",
+                  "resource_type_row",
+                  "resource_region_row",
                   "resource_issue_text",
+                  "resource_usage_slider",
                   "resource_action_button"
                 ]
               },
@@ -90,13 +272,50 @@
           }
         },
         {
-          "id": "resource_header_row",
+          "id": "resource_card_header_row",
+          "component": {
+            "Row": {
+              "children": {
+                "explicitList": [
+                  "resource_title",
+                  "resource_kpmg_brand"
+                ]
+              },
+              "alignment": "center",
+              "distribution": "spaceBetween"
+            }
+          }
+        },
+        {
+          "id": "resource_title",
+          "component": {
+            "Text": {
+              "text": {
+                "path": "/name"
+              },
+              "usageHint": "h5"
+            }
+          }
+        },
+        {
+          "id": "resource_kpmg_brand",
+          "component": {
+            "Text": {
+              "text": {
+                "literalString": "KPMG"
+              },
+              "usageHint": "caption"
+            }
+          }
+        },
+        {
+          "id": "resource_status_row",
           "component": {
             "Row": {
               "children": {
                 "explicitList": [
                   "resource_status_icon",
-                  "resource_name_text"
+                  "resource_status_text"
                 ]
               },
               "alignment": "center"
@@ -114,35 +333,131 @@
           }
         },
         {
-          "id": "resource_name_text",
+          "id": "resource_status_text",
           "component": {
             "Text": {
               "text": {
-                "path": "/name"
+                "path": "/status_label"
               },
-              "usageHint": "h3"
+              "usageHint": "h5"
             }
           }
         },
         {
-          "id": "resource_type_text",
+          "id": "resource_type_row",
+          "component": {
+            "Row": {
+              "children": {
+                "explicitList": [
+                  "resource_type_icon",
+                  "resource_type_col"
+                ]
+              },
+              "alignment": "center"
+            }
+          }
+        },
+        {
+          "id": "resource_type_icon",
+          "component": {
+            "Icon": {
+              "name": {
+                "literalString": "category"
+              }
+            }
+          }
+        },
+        {
+          "id": "resource_type_col",
+          "component": {
+            "Column": {
+              "children": {
+                "explicitList": [
+                  "resource_type_label",
+                  "resource_type_value"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "id": "resource_type_label",
+          "component": {
+            "Text": {
+              "text": {
+                "literalString": "Service Type"
+              },
+              "usageHint": "caption"
+            }
+          }
+        },
+        {
+          "id": "resource_type_value",
           "component": {
             "Text": {
               "text": {
                 "path": "/type"
               },
+              "usageHint": "h5"
+            }
+          }
+        },
+        {
+          "id": "resource_region_row",
+          "component": {
+            "Row": {
+              "children": {
+                "explicitList": [
+                  "resource_region_icon",
+                  "resource_region_col"
+                ]
+              },
+              "alignment": "center"
+            }
+          }
+        },
+        {
+          "id": "resource_region_icon",
+          "component": {
+            "Icon": {
+              "name": {
+                "literalString": "place"
+              }
+            }
+          }
+        },
+        {
+          "id": "resource_region_col",
+          "component": {
+            "Column": {
+              "children": {
+                "explicitList": [
+                  "resource_region_label",
+                  "resource_region_value"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "id": "resource_region_label",
+          "component": {
+            "Text": {
+              "text": {
+                "literalString": "Region"
+              },
               "usageHint": "caption"
             }
           }
         },
         {
-          "id": "resource_region_text",
+          "id": "resource_region_value",
           "component": {
             "Text": {
               "text": {
                 "path": "/region"
               },
-              "usageHint": "caption"
+              "usageHint": "h5"
             }
           }
         },
@@ -152,7 +467,20 @@
             "Text": {
               "text": {
                 "path": "/issue"
-              }
+              },
+              "usageHint": "caption"
+            }
+          }
+        },
+        {
+          "id": "resource_usage_slider",
+          "component": {
+            "Slider": {
+              "value": {
+                "path": "/usage_percent"
+              },
+              "minValue": 0,
+              "maxValue": 100
             }
           }
         },
@@ -191,36 +519,149 @@
           "valueString": "3 resources found: 1 healthy, 1 warning, 1 error."
         },
         {
+          "key": "metrics",
+          "valueMap": [
+            {
+              "key": "healthy",
+              "valueMap": [
+                {
+                  "key": "label",
+                  "valueString": "Healthy"
+                },
+                {
+                  "key": "value",
+                  "valueString": "1"
+                }
+              ]
+            },
+            {
+              "key": "warning",
+              "valueMap": [
+                {
+                  "key": "label",
+                  "valueString": "Warning"
+                },
+                {
+                  "key": "value",
+                  "valueString": "1"
+                }
+              ]
+            },
+            {
+              "key": "error",
+              "valueMap": [
+                {
+                  "key": "label",
+                  "valueString": "Error"
+                },
+                {
+                  "key": "value",
+                  "valueString": "1"
+                }
+              ]
+            }
+          ]
+        },
+        {
           "key": "resources",
           "valueMap": [
             {
               "key": "auth-service",
               "valueMap": [
-                { "key": "name", "valueString": "auth-service" },
-                { "key": "type", "valueString": "Cloud Run" },
-                { "key": "region", "valueString": "us-west1" },
-                { "key": "status_icon", "valueString": "check" },
-                { "key": "issue", "valueString": "" }
+                {
+                  "key": "name",
+                  "valueString": "auth-service"
+                },
+                {
+                  "key": "type",
+                  "valueString": "Cloud Run"
+                },
+                {
+                  "key": "region",
+                  "valueString": "us-west1"
+                },
+                {
+                  "key": "status_icon",
+                  "valueString": "check"
+                },
+                {
+                  "key": "status_label",
+                  "valueString": "Healthy"
+                },
+                {
+                  "key": "issue",
+                  "valueString": ""
+                },
+                {
+                  "key": "usage_percent",
+                  "valueNumber": 0
+                }
               ]
             },
             {
               "key": "events-db",
               "valueMap": [
-                { "key": "name", "valueString": "events-db" },
-                { "key": "type", "valueString": "Cloud SQL" },
-                { "key": "region", "valueString": "us-east1" },
-                { "key": "status_icon", "valueString": "warning" },
-                { "key": "issue", "valueString": "Storage usage at 92%" }
+                {
+                  "key": "name",
+                  "valueString": "events-db"
+                },
+                {
+                  "key": "type",
+                  "valueString": "Cloud SQL"
+                },
+                {
+                  "key": "region",
+                  "valueString": "us-east1"
+                },
+                {
+                  "key": "status_icon",
+                  "valueString": "warning"
+                },
+                {
+                  "key": "status_label",
+                  "valueString": "Needs Attention"
+                },
+                {
+                  "key": "issue",
+                  "valueString": "Storage usage at 92%"
+                },
+                {
+                  "key": "usage_percent",
+                  "valueNumber": 92
+                }
               ]
             },
             {
               "key": "analytics-pipeline",
               "valueMap": [
-                { "key": "name", "valueString": "analytics-pipeline" },
-                { "key": "type", "valueString": "Cloud Run" },
-                { "key": "region", "valueString": "us-west1" },
-                { "key": "status_icon", "valueString": "warning" },
-                { "key": "issue", "valueString": "CrashLoopBackOff: OOM killed" }
+                {
+                  "key": "name",
+                  "valueString": "analytics-pipeline"
+                },
+                {
+                  "key": "type",
+                  "valueString": "Cloud Run"
+                },
+                {
+                  "key": "region",
+                  "valueString": "us-west1"
+                },
+                {
+                  "key": "status_icon",
+                  "valueString": "info"
+                },
+                {
+                  "key": "status_label",
+                  "valueString": "Critical"
+                },
+                {
+                  "key": "issue",
+                  "valueString": "CrashLoopBackOff: OOM killed"
+                },
+                {
+                  "key": "usage_percent",
+                  "valueNumber": 0
+                }
               ]
             }
           ]

@@ -124,7 +124,7 @@
     },
     "KpmgResourceDashboard": {
       "type": "object",
-      "description": "List of resource cards with status icons, type, region, issue text, and drill-down button. Based on the ADK+A2UI codelab cloud dashboard pattern.",
+      "description": "KPMG-branded cloud dashboard composing KpmgBrandedHeader, KpmgMetricCard KPI row, and KpmgStatusPanel/KpmgDataFieldRow resource cards in a List.",
       "properties": {
         "title": { "type": "string" },
         "summary": {

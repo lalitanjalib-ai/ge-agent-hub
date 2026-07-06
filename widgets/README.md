@@ -47,7 +47,7 @@ widgets/
 | **KpmgDataFieldRow** | Read-only icon + label + value rows | `kpmg_data_field_row.json` |
 | **KpmgConfirmationModal** | Confirm/cancel modal dialog | `kpmg_confirmation_modal.json` |
 | **KpmgActionBar** | Primary + secondary action buttons | `kpmg_action_bar.json` |
-| **KpmgResourceDashboard** | Resource list with status icons (codelab pattern) | `kpmg_resource_dashboard.json` |
+| **KpmgResourceDashboard** | Branded header + KPI metrics + status-panel resource cards | `kpmg_resource_dashboard.json` |
 
 ### KPMG theme
 
@@ -110,14 +110,14 @@ Gemini Enterprise validates payloads against the **standard catalog** and render
 
 The [ADK + A2UI Codelab](https://codelabs.developers.google.com/next26/adk-a2ui) shows how to render A2UI in `adk web` during development. This repo provides:
 
-1. **`poc/a2ui_utils.py`** — `a2ui_callback` converts LLM JSON output into rendered UI parts (codelab pattern)
+1. **`widgets/python/a2ui_utils.py`** — `a2ui_callback` converts LLM JSON output into rendered UI parts (codelab pattern)
 2. **`poc/agent.py`** — sample agent using `A2uiSchemaManager` + `KpmgWidgetsCatalog`
 
 ```bash
 cd poc
 uv sync
 cp .env.example .env   # set GOOGLE_CLOUD_PROJECT
-uv run python scripts/run_local.py
+uv run python run_local.py
 ```
 
 Open http://127.0.0.1:8080, select the **poc** agent, and try:
@@ -127,7 +127,7 @@ Open http://127.0.0.1:8080, select the **poc** agent, and try:
 ### Using a2ui_callback in your agent
 
 ```python
-from a2ui_utils import a2ui_callback
+from widgets.python.a2ui_utils import a2ui_callback
 
 root_agent = Agent(
     ...
@@ -145,6 +145,7 @@ from widgets.python.builders import (
     branded_header,
     data_field_row,
     action_bar,
+    resource_dashboard,
     surface_messages,
 )
 
@@ -170,6 +171,16 @@ payload = surface_messages(
 )
 
 print(f"<a2ui-json>{json.dumps(payload)}</a2ui-json>")
+
+# Cloud dashboard (POC / codelab pattern):
+dashboard = resource_dashboard(
+    summary="3 resources found: 1 healthy, 1 warning, 1 error.",
+    resources=[
+        {"name": "auth-service", "type": "Cloud Run", "region": "us-west1", "status": "healthy"},
+        {"name": "events-db", "type": "Cloud SQL", "region": "us-east1", "status": "warning", "issue": "Storage usage at 92%"},
+    ],
+)
+print(f"<a2ui-json>{json.dumps(dashboard)}</a2ui-json>")
 ```
 
 ## Prototyping with A2UI Composer

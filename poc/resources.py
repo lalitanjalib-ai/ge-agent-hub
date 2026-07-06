@@ -27,6 +27,7 @@ RESOURCES = [
         "connections": 195,
         "version": "PostgreSQL 16",
         "issue": "Storage usage at 92%",
+        "usage_percent": 92,
     },
     {
         "name": "analytics-pipeline",
@@ -43,6 +44,19 @@ RESOURCES = [
 ]
 
 
+_pending_resources: list[dict] | None = None
+
+
 def get_resources() -> list[dict]:
     """Get all cloud resources in the current project."""
-    return RESOURCES
+    global _pending_resources
+    _pending_resources = list(RESOURCES)
+    return _pending_resources
+
+
+def consume_pending_resources() -> list[dict] | None:
+    """Return resources fetched by the latest get_resources call, once."""
+    global _pending_resources
+    pending = _pending_resources
+    _pending_resources = None
+    return pending

@@ -13,16 +13,28 @@ from typing import Any
 from widgets.python.theme import KPMG_SURFACE_STYLES
 
 STATUS_ICON_MAP = {
-    "healthy": "checkCircle",
+    "healthy": "check",
     "warning": "warning",
-    "error": "error",
+    "error": "info",
     "info": "info",
+}
+
+STATUS_LABEL_MAP = {
+    "healthy": "Healthy",
+    "warning": "Needs Attention",
+    "error": "Critical",
+    "info": "Info",
 }
 
 
 def resource_status_icon(status: str) -> str:
     """Map a resource status label to a Material icon name."""
     return STATUS_ICON_MAP.get(status.lower(), "info")
+
+
+def resource_status_label(status: str) -> str:
+    """Map a resource status label to display text."""
+    return STATUS_LABEL_MAP.get(status.lower(), status.title())
 
 
 def begin_surface(
@@ -416,6 +428,539 @@ def confirmation_modal(
             },
         },
     ]
+
+
+def resource_entry(
+    name: str,
+    resource_type: str,
+    region: str,
+    status: str,
+    issue: str = "",
+    usage_percent: int = 0,
+) -> dict[str, Any]:
+    """Build a keyed valueMap entry for a resource list item."""
+    entry: dict[str, Any] = {
+        "key": name,
+        "valueMap": [
+            {"key": "name", "valueString": name},
+            {"key": "type", "valueString": resource_type},
+            {"key": "region", "valueString": region},
+            {"key": "status_icon", "valueString": resource_status_icon(status)},
+            {"key": "status_label", "valueString": resource_status_label(status)},
+            {"key": "issue", "valueString": issue},
+            {"key": "usage_percent", "valueNumber": usage_percent},
+        ],
+    }
+    return entry
+
+
+def _resource_dashboard_components() -> list[dict[str, Any]]:
+    """KPMG widget composition: branded header, metric row, status-panel resource cards."""
+    return [
+        {
+            "id": "main_column",
+            "component": {
+                "Column": {
+                    "children": {
+                        "explicitList": [
+                            "header_card",
+                            "metrics_row",
+                            "resource_list",
+                        ]
+                    },
+                    "alignment": "stretch",
+                }
+            },
+        },
+        {
+            "id": "header_card",
+            "component": {"Card": {"child": "header_column"}},
+        },
+        {
+            "id": "header_column",
+            "component": {
+                "Column": {
+                    "children": {
+                        "explicitList": [
+                            "header_icon",
+                            "header_title",
+                            "header_subtitle",
+                        ]
+                    },
+                    "alignment": "center",
+                }
+            },
+        },
+        {
+            "id": "header_icon",
+            "component": {
+                "Icon": {"name": {"literalString": "cloud"}}
+            },
+        },
+        {
+            "id": "header_title",
+            "component": {
+                "Text": {
+                    "text": {"literalString": "Cloud Resource Dashboard"},
+                    "usageHint": "h2",
+                }
+            },
+        },
+        {
+            "id": "header_subtitle",
+            "component": {
+                "Text": {
+                    "text": {"path": "/summary"},
+                    "usageHint": "h4",
+                }
+            },
+        },
+        {
+            "id": "metrics_row",
+            "component": {
+                "Row": {
+                    "children": {
+                        "explicitList": [
+                            "metric_healthy",
+                            "metric_warning",
+                            "metric_error",
+                        ]
+                    },
+                    "distribution": "spaceEvenly",
+                }
+            },
+        },
+        {
+            "id": "metric_healthy",
+            "component": {"Card": {"child": "metric_healthy_col"}},
+        },
+        {
+            "id": "metric_healthy_col",
+            "component": {
+                "Column": {
+                    "children": {
+                        "explicitList": [
+                            "metric_healthy_label",
+                            "metric_healthy_value",
+                        ]
+                    },
+                    "alignment": "center",
+                }
+            },
+        },
+        {
+            "id": "metric_healthy_label",
+            "component": {
+                "Text": {
+                    "text": {"path": "/metrics/healthy/label"},
+                    "usageHint": "caption",
+                }
+            },
+        },
+        {
+            "id": "metric_healthy_value",
+            "component": {
+                "Text": {
+                    "text": {"path": "/metrics/healthy/value"},
+                    "usageHint": "h2",
+                }
+            },
+        },
+        {
+            "id": "metric_warning",
+            "component": {"Card": {"child": "metric_warning_col"}},
+        },
+        {
+            "id": "metric_warning_col",
+            "component": {
+                "Column": {
+                    "children": {
+                        "explicitList": [
+                            "metric_warning_label",
+                            "metric_warning_value",
+                        ]
+                    },
+                    "alignment": "center",
+                }
+            },
+        },
+        {
+            "id": "metric_warning_label",
+            "component": {
+                "Text": {
+                    "text": {"path": "/metrics/warning/label"},
+                    "usageHint": "caption",
+                }
+            },
+        },
+        {
+            "id": "metric_warning_value",
+            "component": {
+                "Text": {
+                    "text": {"path": "/metrics/warning/value"},
+                    "usageHint": "h2",
+                }
+            },
+        },
+        {
+            "id": "metric_error",
+            "component": {"Card": {"child": "metric_error_col"}},
+        },
+        {
+            "id": "metric_error_col",
+            "component": {
+                "Column": {
+                    "children": {
+                        "explicitList": [
+                            "metric_error_label",
+                            "metric_error_value",
+                        ]
+                    },
+                    "alignment": "center",
+                }
+            },
+        },
+        {
+            "id": "metric_error_label",
+            "component": {
+                "Text": {
+                    "text": {"path": "/metrics/error/label"},
+                    "usageHint": "caption",
+                }
+            },
+        },
+        {
+            "id": "metric_error_value",
+            "component": {
+                "Text": {
+                    "text": {"path": "/metrics/error/value"},
+                    "usageHint": "h2",
+                }
+            },
+        },
+        {
+            "id": "resource_list",
+            "component": {
+                "List": {
+                    "direction": "vertical",
+                    "children": {
+                        "template": {
+                            "componentId": "resource_card_template",
+                            "dataBinding": "/resources",
+                        }
+                    },
+                }
+            },
+        },
+        {
+            "id": "resource_card_template",
+            "component": {"Card": {"child": "resource_card_column"}},
+        },
+        {
+            "id": "resource_card_column",
+            "component": {
+                "Column": {
+                    "children": {
+                        "explicitList": [
+                            "resource_card_header_row",
+                            "resource_status_row",
+                            "resource_type_row",
+                            "resource_region_row",
+                            "resource_issue_text",
+                            "resource_usage_slider",
+                            "resource_action_button",
+                        ]
+                    },
+                    "alignment": "stretch",
+                }
+            },
+        },
+        {
+            "id": "resource_card_header_row",
+            "component": {
+                "Row": {
+                    "children": {
+                        "explicitList": [
+                            "resource_title",
+                            "resource_kpmg_brand",
+                        ]
+                    },
+                    "alignment": "center",
+                    "distribution": "spaceBetween",
+                }
+            },
+        },
+        {
+            "id": "resource_title",
+            "component": {
+                "Text": {
+                    "text": {"path": "/name"},
+                    "usageHint": "h5",
+                }
+            },
+        },
+        {
+            "id": "resource_kpmg_brand",
+            "component": {
+                "Text": {
+                    "text": {"literalString": "KPMG"},
+                    "usageHint": "caption",
+                }
+            },
+        },
+        {
+            "id": "resource_status_row",
+            "component": {
+                "Row": {
+                    "children": {
+                        "explicitList": [
+                            "resource_status_icon",
+                            "resource_status_text",
+                        ]
+                    },
+                    "alignment": "center",
+                }
+            },
+        },
+        {
+            "id": "resource_status_icon",
+            "component": {
+                "Icon": {"name": {"path": "/status_icon"}}
+            },
+        },
+        {
+            "id": "resource_status_text",
+            "component": {
+                "Text": {
+                    "text": {"path": "/status_label"},
+                    "usageHint": "h5",
+                }
+            },
+        },
+        {
+            "id": "resource_type_row",
+            "component": {
+                "Row": {
+                    "children": {
+                        "explicitList": [
+                            "resource_type_icon",
+                            "resource_type_col",
+                        ]
+                    },
+                    "alignment": "center",
+                }
+            },
+        },
+        {
+            "id": "resource_type_icon",
+            "component": {
+                "Icon": {"name": {"literalString": "category"}}
+            },
+        },
+        {
+            "id": "resource_type_col",
+            "component": {
+                "Column": {
+                    "children": {
+                        "explicitList": [
+                            "resource_type_label",
+                            "resource_type_value",
+                        ]
+                    }
+                }
+            },
+        },
+        {
+            "id": "resource_type_label",
+            "component": {
+                "Text": {
+                    "text": {"literalString": "Service Type"},
+                    "usageHint": "caption",
+                }
+            },
+        },
+        {
+            "id": "resource_type_value",
+            "component": {
+                "Text": {
+                    "text": {"path": "/type"},
+                    "usageHint": "h5",
+                }
+            },
+        },
+        {
+            "id": "resource_region_row",
+            "component": {
+                "Row": {
+                    "children": {
+                        "explicitList": [
+                            "resource_region_icon",
+                            "resource_region_col",
+                        ]
+                    },
+                    "alignment": "center",
+                }
+            },
+        },
+        {
+            "id": "resource_region_icon",
+            "component": {
+                "Icon": {"name": {"literalString": "place"}}
+            },
+        },
+        {
+            "id": "resource_region_col",
+            "component": {
+                "Column": {
+                    "children": {
+                        "explicitList": [
+                            "resource_region_label",
+                            "resource_region_value",
+                        ]
+                    }
+                }
+            },
+        },
+        {
+            "id": "resource_region_label",
+            "component": {
+                "Text": {
+                    "text": {"literalString": "Region"},
+                    "usageHint": "caption",
+                }
+            },
+        },
+        {
+            "id": "resource_region_value",
+            "component": {
+                "Text": {
+                    "text": {"path": "/region"},
+                    "usageHint": "h5",
+                }
+            },
+        },
+        {
+            "id": "resource_issue_text",
+            "component": {
+                "Text": {
+                    "text": {"path": "/issue"},
+                    "usageHint": "caption",
+                }
+            },
+        },
+        {
+            "id": "resource_usage_slider",
+            "component": {
+                "Slider": {
+                    "value": {"path": "/usage_percent"},
+                    "minValue": 0,
+                    "maxValue": 100,
+                }
+            },
+        },
+        {
+            "id": "resource_action_button",
+            "component": {
+                "Button": {
+                    "child": "resource_action_text",
+                    "action": {"name": "view_resource_details"},
+                    "variant": "secondary",
+                }
+            },
+        },
+        {
+            "id": "resource_action_text",
+            "component": {
+                "Text": {"text": {"literalString": "View Details"}}
+            },
+        },
+    ]
+
+
+def _resource_dashboard_data(
+    resources: list[dict[str, Any]],
+    summary: str,
+) -> list[dict[str, Any]]:
+    counts = {"healthy": 0, "warning": 0, "error": 0}
+    for resource in resources:
+        status = str(resource.get("status", "")).lower()
+        if status in counts:
+            counts[status] += 1
+
+    resource_entries = [
+        resource_entry(
+            name=r["name"],
+            resource_type=r["type"],
+            region=r["region"],
+            status=r["status"],
+            issue=r.get("issue", ""),
+            usage_percent=int(r.get("usage_percent", 0) or 0),
+        )
+        for r in resources
+    ]
+
+    return [
+        {"key": "summary", "valueString": summary},
+        {
+            "key": "metrics",
+            "valueMap": [
+                {
+                    "key": "healthy",
+                    "valueMap": [
+                        {"key": "label", "valueString": "Healthy"},
+                        {"key": "value", "valueString": str(counts["healthy"])},
+                    ],
+                },
+                {
+                    "key": "warning",
+                    "valueMap": [
+                        {"key": "label", "valueString": "Warning"},
+                        {"key": "value", "valueString": str(counts["warning"])},
+                    ],
+                },
+                {
+                    "key": "error",
+                    "valueMap": [
+                        {"key": "label", "valueString": "Error"},
+                        {"key": "value", "valueString": str(counts["error"])},
+                    ],
+                },
+            ],
+        },
+        {"key": "resources", "valueMap": resource_entries},
+    ]
+
+
+def resource_dashboard(
+    surface_id: str = "kpmg-resource-dashboard",
+    title: str = "Cloud Resource Dashboard",
+    summary: str = "",
+    resources: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """
+    KPMG cloud resource dashboard composing BrandedHeader, MetricCard, and
+    StatusPanel/DataFieldRow patterns from the shared widget library.
+    """
+    del title  # header title is fixed in the KPMG layout
+    resource_list = resources or []
+    if not summary and resource_list:
+        counts = {"healthy": 0, "warning": 0, "error": 0}
+        for resource in resource_list:
+            status = str(resource.get("status", "")).lower()
+            if status in counts:
+                counts[status] += 1
+        summary = (
+            f"{len(resource_list)} resources found: "
+            f"{counts['healthy']} healthy, {counts['warning']} warning, "
+            f"{counts['error']} error."
+        )
+
+    return surface_messages(
+        surface_id=surface_id,
+        root="main_column",
+        components=_resource_dashboard_components(),
+        data_contents=_resource_dashboard_data(resource_list, summary),
+    )
 
 
 def surface_messages(

@@ -51,13 +51,19 @@ python run_local.py
 
 After code changes, restart the server and start a **new session** so the agent and callback reload cleanly.
 
+Verify the shared widget integration without starting the server:
+
+```bash
+python verify_widgets.py
+```
+
 ## Project layout
 
 ```
 poc/
-├── agent.py            # ADK agent: schema prompt, tool, model, a2ui_callback
+├── agent.py            # ADK agent: schema prompt, tool, model, dashboard callback
+├── dashboard_callback.py  # Injects KPMG resource dashboard after get_resources
 ├── resources.py        # Mock cloud resource data (codelab)
-├── a2ui_utils.py       # Parses LLM A2UI JSON → adk web render format
 ├── ssl_config.py       # Corporate proxy / TLS helpers for Vertex AI
 ├── run_local.py        # Starts adk web from repo root (app = poc)
 ├── pyproject.toml
@@ -71,7 +77,11 @@ Shared widget library (repo root):
 widgets/
 ├── catalog/kpmg_catalog_definition.json
 ├── examples/0.8/          # Few-shot A2UI payloads (incl. resource dashboard)
-└── python/provider.py     # KpmgWidgetsCatalog for A2uiSchemaManager
+└── python/
+    ├── provider.py        # KpmgWidgetsCatalog for A2uiSchemaManager
+    ├── a2ui_utils.py      # a2ui_callback for adk web rendering
+    ├── theme.py           # KPMG brand tokens (#00338D, Roboto)
+    └── builders.py        # Programmatic A2UI payload builders
 ```
 
 ## How it works
@@ -90,7 +100,7 @@ sequenceDiagram
     LLM->>Tool: get_resources()
     Tool-->>LLM: mock resource list
     LLM-->>Agent: A2UI JSON in text (<a2ui-json> tags)
-    Agent->>Agent: a2ui_callback (parse + wrap)
+    Agent->>Agent: cloud_dashboard_callback (KPMG builder or parse)
     Agent-->>ADK: inline_data parts (application/json+a2ui)
     ADK-->>User: rendered UI components
 ```
@@ -109,14 +119,16 @@ The A2UI SDK instructs the model to emit protocol messages inside `<a2ui-json>` 
 
 `get_resources()` returns three mock resources with `healthy`, `warning`, and `error` statuses. The LLM uses this data to populate `dataModelUpdate` bindings.
 
-### 3. Render callback (`a2ui_utils.py`)
+### 3. Render callback (`dashboard_callback.py` + `widgets/python/a2ui_utils.py`)
 
-`after_model_callback=a2ui_callback` converts the model's text output into `inline_data` blobs that `adk web` renders. The parser handles:
+After `get_resources` runs, `cloud_dashboard_callback` builds the KPMG dashboard programmatically from `widgets.python.builders.resource_dashboard` (BrandedHeader + MetricCard row + StatusPanel/DataFieldRow resource cards). Other prompts still use `a2ui_callback` for model-generated UI.
 
 - `<a2ui-json>` tagged blocks (one message per tag)
 - Raw JSON arrays and concatenated `{...}{...}` objects (codelab style)
 - Accidental `kind` / `data` / `mimeType` wire-format output from the model
 - `valueList` → `valueMap` conversion for List template data binding
+
+The resource dashboard bypasses model-generated layout and uses the shared KPMG widget builder directly.
 
 ### 4. SSL (`ssl_config.py`)
 
@@ -164,9 +176,9 @@ Restart the server after changing SSL settings.
 |---------|--------------|-----|
 | `No root_agent found for 'scripts'` | `poc/scripts/` was picked up as a fake ADK app, or browser URL still has `?app=scripts` | Stop server. From `poc/` run `python run_local.py`. Open `http://127.0.0.1:8080/dev-ui/?app=poc` |
 | `CERTIFICATE_VERIFY_FAILED` | Corporate TLS interception | Set `SSL_VERIFY=false` or `REQUESTS_CA_BUNDLE` in `.env`, restart server |
-| Empty bubble after tool call | Parser missed `<a2ui-json>` blocks | Fixed in `a2ui_utils.py` — restart, **+ New Session**, hard-refresh browser |
+| Empty bubble after tool call | Parser missed `<a2ui-json>` blocks | Fixed in `widgets/python/a2ui_utils.py` — restart, **+ New Session**, hard-refresh browser |
 | Cards show `(empty)` | List data used `valueList` instead of `valueMap` | Fixed in KPMG example + auto-conversion in callback |
-| Raw JSON in chat | Model output wire-format wrappers or unparsed JSON | Fixed in `a2ui_utils.py` — new session after restart |
+| Raw JSON in chat | Model output wire-format wrappers or unparsed JSON | Fixed in `widgets/python/a2ui_utils.py` — new session after restart |
 | `unexpected extra arguments (agent.py ...)` | `--allow_origins *` glob on Windows | Use `python run_local.py` |
 | UI not updating after edit | Stale session or cached HTTP client | Ctrl+C, restart server, **+ New Session** |
 | Auth errors | Expired ADC token | `gcloud auth application-default login` |

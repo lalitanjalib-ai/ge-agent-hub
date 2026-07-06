@@ -212,3 +212,15 @@ def a2ui_callback(
         )
 
     return None
+
+
+def llm_response_from_messages(messages: list[dict]) -> LlmResponse:
+    """Wrap A2UI protocol messages for adk web rendering."""
+    new_parts = [
+        _wrap_a2ui_part(_normalize_data_model(message))
+        for message in messages
+    ]
+    return LlmResponse(
+        content=types.Content(role="model", parts=new_parts),
+        custom_metadata={"a2a:response": "true"},
+    )

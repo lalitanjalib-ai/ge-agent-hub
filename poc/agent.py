@@ -12,6 +12,7 @@ Then open http://127.0.0.1:8080/dev-ui/?app=poc (or select **poc** in the dropdo
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from functools import cached_property
@@ -34,12 +35,14 @@ from google.adk.agents import Agent
 from google.adk.models import Gemini
 from google.genai import types
 from a2ui.schema.manager import A2uiSchemaManager
+from a2ui.schema.common_modifiers import remove_strict_validation
 from a2ui.schema.constants import VERSION_0_8
 
-from a2ui_utils import a2ui_callback
+from dashboard_callback import cloud_dashboard_callback
 from resources import get_resources
 from ssl_config import apply_ssl_env, gemini_http_options
 from widgets.python.provider import KpmgWidgetsCatalog
+from widgets.python.theme import KPMG_SURFACE_STYLES
 
 _ssl_verify_disabled = apply_ssl_env()
 _gemini_http_options = gemini_http_options(_ssl_verify_disabled)
@@ -75,9 +78,12 @@ def _build_model():
 
     return CorporateGemini(model=model_name)
 
+_kpmg_styles = json.dumps(KPMG_SURFACE_STYLES)
+
 schema_manager = A2uiSchemaManager(
     version=VERSION_0_8,
     catalogs=KpmgWidgetsCatalog.get_catalogs_for_agent(),
+    schema_modifiers=[remove_strict_validation],
 )
 
 instruction = schema_manager.generate_system_prompt(
@@ -90,10 +96,12 @@ instruction = schema_manager.generate_system_prompt(
         "Analyze the user's request and return structured UI when appropriate."
     ),
     ui_description=(
-        "Use cards for resource summaries, rows and columns for comparisons, "
-        "icons for status indicators, and buttons for drill-down actions. "
-        "Apply KPMG branding in beginRendering styles: "
-        '{"primaryColor": "#00338D", "font": "Roboto"}. '
+        "Use KPMG-branded A2UI surfaces with beginRendering styles: "
+        f"{_kpmg_styles}. "
+        "When displaying cloud resources after get_resources, the UI is rendered "
+        "from the shared KpmgResourceDashboard widget (KpmgBrandedHeader + "
+        "KpmgMetricCard summary row + KpmgStatusPanel/KpmgDataFieldRow resource "
+        "cards). Follow that composition in examples. "
         "For List templates, bind list data with valueMap (keyed entries), "
         "not valueList. Use standard icon names: check, warning, info. "
         "Do NOT use markdown formatting in text values. Use the usageHint "
@@ -105,6 +113,7 @@ instruction = schema_manager.generate_system_prompt(
     ),
     include_schema=True,
     include_examples=True,
+    validate_examples=False,
 )
 
 root_agent = Agent(
@@ -113,5 +122,5 @@ root_agent = Agent(
     description="A cloud infrastructure assistant that renders rich A2UI interfaces.",
     instruction=instruction,
     tools=[get_resources],
-    after_model_callback=a2ui_callback,
+    after_model_callback=cloud_dashboard_callback,
 )
