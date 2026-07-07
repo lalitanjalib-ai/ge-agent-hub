@@ -9,12 +9,31 @@ from typing import Any
 from google.adk.models.llm_request import LlmRequest
 
 VIEW_RESOURCE_DETAILS = "view_resource_details"
+_A2A_DATAPART_RE = re.compile(
+    r"<a2a_datapart_json>(.*?)</a2a_datapart_json>",
+    re.DOTALL,
+)
+
+
+def _unwrap_literal(value: object) -> object:
+    if not isinstance(value, dict):
+        return value
+    if "literalString" in value:
+        return value["literalString"]
+    if "literalNumber" in value:
+        return value["literalNumber"]
+    if "literalBoolean" in value:
+        return value["literalBoolean"]
+    return value
 
 
 def normalize_action_context(context: object) -> dict[str, Any]:
     """Normalize v0.8 context list or flat dict into a string-keyed map."""
     if isinstance(context, dict):
-        return {str(key): value for key, value in context.items()}
+        return {
+            str(key): _unwrap_literal(value)
+            for key, value in context.items()
+        }
 
     if isinstance(context, list):
         normalized: dict[str, Any] = {}
@@ -44,12 +63,28 @@ def normalize_action_context(context: object) -> dict[str, Any]:
 def _user_action_from_value(value: object) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
-    if "userAction" in value:
-        action = value["userAction"]
-        return action if isinstance(action, dict) else None
-    if "name" in value and ("context" in value or value.get("name")):
+    for key in ("userAction", "action"):
+        if key in value:
+            action = value[key]
+            return action if isinstance(action, dict) else None
+    if value.get("name") == VIEW_RESOURCE_DETAILS:
         return value
     return None
+
+
+def _decode_part_bytes(data: bytes) -> object | None:
+    text = data.decode("utf-8", errors="replace").strip()
+    if not text:
+        return None
+
+    match = _A2A_DATAPART_RE.search(text)
+    if match:
+        text = match.group(1).strip()
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return _parse_text_for_user_action(text)
 
 
 def _parse_text_for_user_action(text: str) -> dict[str, Any] | None:
@@ -80,13 +115,19 @@ def _parse_text_for_user_action(text: str) -> dict[str, Any] | None:
         except json.JSONDecodeError:
             pass
 
-    if VIEW_RESOURCE_DETAILS in text:
-        name_match = re.search(r'"name"\s*:\s*"([^"]+)"', text)
-        if name_match:
-            return {
-                "name": VIEW_RESOURCE_DETAILS,
-                "context": {"name": name_match.group(1)},
-            }
+    if VIEW_RESOURCE_DETAILS not in text:
+        return None
+
+    context_match = re.search(
+        r'"context"\s*:\s*(\{[^{}]*"name"\s*:\s*"([^"]+)"[^{}]*\})',
+        text,
+    )
+    if context_match:
+        try:
+            context = json.loads(context_match.group(1))
+        except json.JSONDecodeError:
+            context = {"name": context_match.group(2)}
+        return {"name": VIEW_RESOURCE_DETAILS, "context": context}
 
     return None
 
@@ -102,22 +143,20 @@ def extract_user_action(llm_request: LlmRequest) -> dict[str, Any] | None:
                 if action:
                     return action
 
-            for candidate in (
-                getattr(part, "data", None),
-                getattr(part, "inline_data", None),
-            ):
-                if candidate is None:
-                    continue
-                if hasattr(candidate, "data") and candidate.data:
-                    try:
-                        payload = json.loads(candidate.data.decode("utf-8"))
-                    except (AttributeError, json.JSONDecodeError, UnicodeDecodeError):
-                        payload = None
-                    if isinstance(payload, dict):
-                        action = _user_action_from_value(payload)
-                        if not action and "data" in payload:
-                            action = _user_action_from_value(payload.get("data"))
-                        if action:
-                            return action
+            inline = getattr(part, "inline_data", None)
+            if inline is not None and getattr(inline, "data", None):
+                payload = _decode_part_bytes(inline.data)
+                if isinstance(payload, dict):
+                    action = _user_action_from_value(payload)
+                    if not action and isinstance(payload.get("data"), dict):
+                        action = _user_action_from_value(payload["data"])
+                    if action:
+                        return action
+
+            metadata = getattr(part, "part_metadata", None)
+            if isinstance(metadata, dict):
+                action = _user_action_from_value(metadata)
+                if action:
+                    return action
 
     return None

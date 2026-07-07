@@ -8,6 +8,7 @@ a custom client renderer.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from widgets.python.theme import KPMG_SURFACE_STYLES
@@ -46,6 +47,30 @@ VIEW_RESOURCE_ACTION: dict[str, Any] = {
         {"key": "status", "value": {"path": "/status_label"}},
     ],
 }
+
+
+def _resource_slug(name: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9]+", "_", name).strip("_")
+
+
+def literal_view_resource_action(resource: dict[str, Any]) -> dict[str, Any]:
+    """Button action with literal context — works without list path resolution."""
+    return {
+        "name": "view_resource_details",
+        "context": [
+            {"key": "name", "value": {"literalString": str(resource["name"])}},
+            {"key": "type", "value": {"literalString": str(resource.get("type", ""))}},
+            {"key": "region", "value": {"literalString": str(resource.get("region", ""))}},
+            {
+                "key": "status",
+                "value": {
+                    "literalString": resource_status_label(
+                        str(resource.get("status", ""))
+                    )
+                },
+            },
+        ],
+    }
 
 
 _DETAIL_FIELD_SPECS: list[tuple[str, str, str]] = [
@@ -482,9 +507,271 @@ def resource_entry(
     return entry
 
 
-def _resource_dashboard_components() -> list[dict[str, Any]]:
-    """KPMG widget composition: branded header, metric row, status-panel resource cards."""
+def _resource_card_components(suffix: str, resource: dict[str, Any]) -> list[dict[str, Any]]:
+    """One resource card with literal fields and a View Details button."""
+    name = str(resource["name"])
+    status = str(resource.get("status", ""))
+    issue = str(resource.get("issue", ""))
+    usage_percent = int(resource.get("usage_percent", 0) or 0)
+    prefix = f"resource_{suffix}"
+
     return [
+        {
+            "id": f"{prefix}_card",
+            "component": {"Card": {"child": f"{prefix}_column"}},
+        },
+        {
+            "id": f"{prefix}_column",
+            "component": {
+                "Column": {
+                    "children": {
+                        "explicitList": [
+                            f"{prefix}_header_row",
+                            f"{prefix}_status_row",
+                            f"{prefix}_type_row",
+                            f"{prefix}_region_row",
+                            f"{prefix}_issue_text",
+                            f"{prefix}_usage_slider",
+                            f"{prefix}_action_button",
+                        ]
+                    },
+                    "alignment": "stretch",
+                }
+            },
+        },
+        {
+            "id": f"{prefix}_header_row",
+            "component": {
+                "Row": {
+                    "children": {
+                        "explicitList": [
+                            f"{prefix}_title",
+                            f"{prefix}_kpmg_brand",
+                        ]
+                    },
+                    "alignment": "center",
+                    "distribution": "spaceBetween",
+                }
+            },
+        },
+        {
+            "id": f"{prefix}_title",
+            "component": {
+                "Text": {"text": {"literalString": name}, "usageHint": "h5"}
+            },
+        },
+        {
+            "id": f"{prefix}_kpmg_brand",
+            "component": {
+                "Text": {"text": {"literalString": "KPMG"}, "usageHint": "caption"}
+            },
+        },
+        {
+            "id": f"{prefix}_status_row",
+            "component": {
+                "Row": {
+                    "children": {
+                        "explicitList": [
+                            f"{prefix}_status_icon",
+                            f"{prefix}_status_text",
+                        ]
+                    },
+                    "alignment": "center",
+                }
+            },
+        },
+        {
+            "id": f"{prefix}_status_icon",
+            "component": {
+                "Icon": {
+                    "name": {"literalString": resource_status_icon(status)}
+                }
+            },
+        },
+        {
+            "id": f"{prefix}_status_text",
+            "component": {
+                "Text": {
+                    "text": {"literalString": resource_status_label(status)},
+                    "usageHint": "h5",
+                }
+            },
+        },
+        {
+            "id": f"{prefix}_type_row",
+            "component": {
+                "Row": {
+                    "children": {
+                        "explicitList": [
+                            f"{prefix}_type_icon",
+                            f"{prefix}_type_col",
+                        ]
+                    },
+                    "alignment": "center",
+                }
+            },
+        },
+        {
+            "id": f"{prefix}_type_icon",
+            "component": {"Icon": {"name": {"literalString": "category"}}},
+        },
+        {
+            "id": f"{prefix}_type_col",
+            "component": {
+                "Column": {
+                    "children": {
+                        "explicitList": [
+                            f"{prefix}_type_label",
+                            f"{prefix}_type_value",
+                        ]
+                    }
+                }
+            },
+        },
+        {
+            "id": f"{prefix}_type_label",
+            "component": {
+                "Text": {
+                    "text": {"literalString": "Service Type"},
+                    "usageHint": "caption",
+                }
+            },
+        },
+        {
+            "id": f"{prefix}_type_value",
+            "component": {
+                "Text": {
+                    "text": {"literalString": str(resource.get("type", ""))},
+                    "usageHint": "h5",
+                }
+            },
+        },
+        {
+            "id": f"{prefix}_region_row",
+            "component": {
+                "Row": {
+                    "children": {
+                        "explicitList": [
+                            f"{prefix}_region_icon",
+                            f"{prefix}_region_col",
+                        ]
+                    },
+                    "alignment": "center",
+                }
+            },
+        },
+        {
+            "id": f"{prefix}_region_icon",
+            "component": {"Icon": {"name": {"literalString": "place"}}},
+        },
+        {
+            "id": f"{prefix}_region_col",
+            "component": {
+                "Column": {
+                    "children": {
+                        "explicitList": [
+                            f"{prefix}_region_label",
+                            f"{prefix}_region_value",
+                        ]
+                    }
+                }
+            },
+        },
+        {
+            "id": f"{prefix}_region_label",
+            "component": {
+                "Text": {
+                    "text": {"literalString": "Region"},
+                    "usageHint": "caption",
+                }
+            },
+        },
+        {
+            "id": f"{prefix}_region_value",
+            "component": {
+                "Text": {
+                    "text": {"literalString": str(resource.get("region", ""))},
+                    "usageHint": "h5",
+                }
+            },
+        },
+        {
+            "id": f"{prefix}_issue_text",
+            "component": {
+                "Text": {"text": {"literalString": issue}, "usageHint": "caption"}
+            },
+        },
+        {
+            "id": f"{prefix}_usage_slider",
+            "component": {
+                "Slider": {
+                    "value": {"literalNumber": usage_percent},
+                    "minValue": 0,
+                    "maxValue": 100,
+                }
+            },
+        },
+        {
+            "id": f"{prefix}_action_button",
+            "component": {
+                "Button": {
+                    "child": f"{prefix}_action_text",
+                    "primary": True,
+                    "action": literal_view_resource_action(resource),
+                }
+            },
+        },
+        {
+            "id": f"{prefix}_action_text",
+            "component": {
+                "Text": {
+                    "text": {"literalString": "View Details"},
+                    "usageHint": "h5",
+                }
+            },
+        },
+    ]
+
+
+def _resource_dashboard_components(
+    resources: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """KPMG widget composition: branded header, metric row, status-panel resource cards."""
+    resource_list = resources or []
+    card_ids = [f"resource_{_resource_slug(r['name'])}_card" for r in resource_list]
+    extra_components: list[dict[str, Any]] = []
+
+    if card_ids:
+        for resource in resource_list:
+            extra_components.extend(
+                _resource_card_components(_resource_slug(str(resource["name"])), resource)
+            )
+        resource_list_component = {
+            "id": "resource_list",
+            "component": {
+                "Column": {
+                    "children": {"explicitList": card_ids},
+                    "alignment": "stretch",
+                }
+            },
+        }
+    else:
+        resource_list_component = {
+            "id": "resource_list",
+            "component": {
+                "List": {
+                    "direction": "vertical",
+                    "children": {
+                        "template": {
+                            "componentId": "resource_card_template",
+                            "dataBinding": "/resources",
+                        }
+                    },
+                }
+            },
+        }
+
+    components: list[dict[str, Any]] = [
         {
             "id": "main_column",
             "component": {
@@ -666,20 +953,14 @@ def _resource_dashboard_components() -> list[dict[str, Any]]:
                 }
             },
         },
-        {
-            "id": "resource_list",
-            "component": {
-                "List": {
-                    "direction": "vertical",
-                    "children": {
-                        "template": {
-                            "componentId": "resource_card_template",
-                            "dataBinding": "/resources",
-                        }
-                    },
-                }
-            },
-        },
+        resource_list_component,
+    ]
+
+    if card_ids:
+        return components + extra_components
+
+    components.extend(
+        [
         {
             "id": "resource_card_template",
             "component": {"Card": {"child": "resource_card_column"}},
@@ -905,7 +1186,9 @@ def _resource_dashboard_components() -> list[dict[str, Any]]:
                 }
             },
         },
-    ]
+        ]
+    )
+    return components
 
 
 def _resource_dashboard_data(
@@ -989,7 +1272,7 @@ def resource_dashboard(
     return surface_messages(
         surface_id=surface_id,
         root="main_column",
-        components=_resource_dashboard_components(),
+        components=_resource_dashboard_components(resource_list),
         data_contents=_resource_dashboard_data(resource_list, summary),
     )
 

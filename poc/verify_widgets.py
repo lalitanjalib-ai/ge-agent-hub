@@ -78,13 +78,10 @@ def main() -> int:
     built = resource_dashboard(resources=RESOURCES)
     built_surface = next(m for m in built if "surfaceUpdate" in m)
     component_ids = {c["id"] for c in built_surface["surfaceUpdate"]["components"]}
-    for required_id in (
-        "header_card",
-        "metrics_row",
-        "resource_status_row",
-        "resource_kpmg_brand",
-        "resource_usage_slider",
-    ):
+    for suffix in ("_status_row", "_kpmg_brand", "_usage_slider"):
+        if not any(component_id.endswith(suffix) for component_id in component_ids):
+            errors.append(f"resource_dashboard missing KPMG component suffix: {suffix}")
+    for required_id in ("header_card", "metrics_row"):
         if required_id not in component_ids:
             errors.append(f"resource_dashboard missing KPMG component: {required_id}")
     built_dm = next(m for m in built if "dataModelUpdate" in m)
@@ -148,15 +145,21 @@ def main() -> int:
         errors.append("resource_detail missing detail_title component")
 
     button = next(
-        c
-        for c in built_surface["surfaceUpdate"]["components"]
-        if c["id"] == "resource_action_button"
+        (
+            c
+            for c in built_surface["surfaceUpdate"]["components"]
+            if c["id"].endswith("_action_button")
+            and c["component"].get("Button", {}).get("action", {}).get("name")
+            == "view_resource_details"
+        ),
+        None,
     )
-    action = button["component"]["Button"]["action"]
-    if action.get("name") != "view_resource_details":
-        errors.append("resource_action_button missing view_resource_details action")
-    if not action.get("context"):
-        errors.append("resource_action_button missing action context")
+    if button is None:
+        errors.append("resource dashboard missing view_resource_details button")
+    else:
+        action = button["component"]["Button"]["action"]
+        if not action.get("context"):
+            errors.append("view_resource_details button missing action context")
 
     if errors:
         for err in errors:
