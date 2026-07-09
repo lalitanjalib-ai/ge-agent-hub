@@ -46,6 +46,20 @@ RESOURCES = [
 
 _pending_resources: list[dict] | None = None
 _pending_detail: dict | None = None
+_pending_profile: dict | None = None
+
+USER_PROFILE = {
+    "avatar": (
+        "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150&h=150&fit=crop"
+    ),
+    "name": "Sarah Chen",
+    "username": "@sarahchen",
+    "bio": "Product Designer at Tech Co. Creating delightful experiences.",
+    "followers": 12400,
+    "following": 892,
+    "posts": 347,
+    "followText": "Follow",
+}
 
 
 def find_resource(name: str) -> dict | None:
@@ -86,4 +100,19 @@ def consume_pending_detail() -> dict | None:
     global _pending_detail
     pending = _pending_detail
     _pending_detail = None
+    return pending
+
+
+def get_user_profile() -> dict:
+    """Get the current user's profile for the KpmgUserProfile widget."""
+    global _pending_profile
+    _pending_profile = dict(USER_PROFILE)
+    return _pending_profile
+
+
+def consume_pending_profile() -> dict | None:
+    """Return profile fetched by get_user_profile, once."""
+    global _pending_profile
+    pending = _pending_profile
+    _pending_profile = None
     return pending

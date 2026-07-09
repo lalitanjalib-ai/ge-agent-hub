@@ -1,0 +1,335 @@
+[
+  {
+    "beginRendering": {
+      "surfaceId": "kpmg-user-profile",
+      "root": "profile_card",
+      "styles": {
+        "primaryColor": "#00338D",
+        "font": "Roboto"
+      }
+    }
+  },
+  {
+    "surfaceUpdate": {
+      "surfaceId": "kpmg-user-profile",
+      "components": [
+        {
+          "id": "profile_card",
+          "component": {
+            "Card": {
+              "child": "main_column"
+            }
+          }
+        },
+        {
+          "id": "main_column",
+          "component": {
+            "Column": {
+              "children": {
+                "explicitList": [
+                  "profile_kpmg_row",
+                  "header",
+                  "info",
+                  "bio",
+                  "stats_row",
+                  "follow_btn"
+                ]
+              },
+              "alignment": "center"
+            }
+          }
+        },
+        {
+          "id": "profile_kpmg_row",
+          "component": {
+            "Row": {
+              "children": {
+                "explicitList": [
+                  "profile_kpmg_spacer",
+                  "profile_kpmg_brand"
+                ]
+              },
+              "alignment": "center",
+              "distribution": "spaceBetween"
+            }
+          }
+        },
+        {
+          "id": "profile_kpmg_spacer",
+          "component": {
+            "Text": {
+              "text": {
+                "literalString": ""
+              },
+              "usageHint": "caption"
+            }
+          }
+        },
+        {
+          "id": "profile_kpmg_brand",
+          "component": {
+            "Text": {
+              "text": {
+                "literalString": "KPMG"
+              },
+              "usageHint": "caption"
+            }
+          }
+        },
+        {
+          "id": "header",
+          "component": {
+            "Image": {
+              "url": {
+                "path": "/avatar"
+              },
+              "usageHint": "avatar",
+              "fit": "cover"
+            }
+          }
+        },
+        {
+          "id": "info",
+          "component": {
+            "Column": {
+              "children": {
+                "explicitList": [
+                  "name",
+                  "username"
+                ]
+              },
+              "alignment": "center"
+            }
+          }
+        },
+        {
+          "id": "name",
+          "component": {
+            "Text": {
+              "text": {
+                "path": "/name"
+              },
+              "usageHint": "h2"
+            }
+          }
+        },
+        {
+          "id": "username",
+          "component": {
+            "Text": {
+              "text": {
+                "path": "/username"
+              },
+              "usageHint": "caption"
+            }
+          }
+        },
+        {
+          "id": "bio",
+          "component": {
+            "Text": {
+              "text": {
+                "path": "/bio"
+              },
+              "usageHint": "body"
+            }
+          }
+        },
+        {
+          "id": "stats_row",
+          "component": {
+            "Row": {
+              "children": {
+                "explicitList": [
+                  "followers_col",
+                  "following_col",
+                  "posts_col"
+                ]
+              },
+              "distribution": "spaceEvenly"
+            }
+          }
+        },
+        {
+          "id": "followers_col",
+          "component": {
+            "Column": {
+              "children": {
+                "explicitList": [
+                  "followers_count",
+                  "followers_label"
+                ]
+              },
+              "alignment": "center"
+            }
+          }
+        },
+        {
+          "id": "followers_count",
+          "component": {
+            "Text": {
+              "text": {
+                "path": "/followers"
+              },
+              "usageHint": "h3"
+            }
+          }
+        },
+        {
+          "id": "followers_label",
+          "component": {
+            "Text": {
+              "text": {
+                "literalString": "Followers"
+              },
+              "usageHint": "caption"
+            }
+          }
+        },
+        {
+          "id": "following_col",
+          "component": {
+            "Column": {
+              "children": {
+                "explicitList": [
+                  "following_count",
+                  "following_label"
+                ]
+              },
+              "alignment": "center"
+            }
+          }
+        },
+        {
+          "id": "following_count",
+          "component": {
+            "Text": {
+              "text": {
+                "path": "/following"
+              },
+              "usageHint": "h3"
+            }
+          }
+        },
+        {
+          "id": "following_label",
+          "component": {
+            "Text": {
+              "text": {
+                "literalString": "Following"
+              },
+              "usageHint": "caption"
+            }
+          }
+        },
+        {
+          "id": "posts_col",
+          "component": {
+            "Column": {
+              "children": {
+                "explicitList": [
+                  "posts_count",
+                  "posts_label"
+                ]
+              },
+              "alignment": "center"
+            }
+          }
+        },
+        {
+          "id": "posts_count",
+          "component": {
+            "Text": {
+              "text": {
+                "path": "/posts"
+              },
+              "usageHint": "h3"
+            }
+          }
+        },
+        {
+          "id": "posts_label",
+          "component": {
+            "Text": {
+              "text": {
+                "literalString": "Posts"
+              },
+              "usageHint": "caption"
+            }
+          }
+        },
+        {
+          "id": "follow_btn",
+          "component": {
+            "Button": {
+              "child": "follow_btn_text",
+              "primary": true,
+              "action": {
+                "name": "follow",
+                "context": [
+                  {
+                    "key": "username",
+                    "value": {
+                      "path": "/username"
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "id": "follow_btn_text",
+          "component": {
+            "Text": {
+              "text": {
+                "path": "/followText"
+              },
+              "usageHint": "h5"
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "dataModelUpdate": {
+      "surfaceId": "kpmg-user-profile",
+      "path": "/",
+      "contents": [
+        {
+          "key": "avatar",
+          "valueString": "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150&h=150&fit=crop"
+        },
+        {
+          "key": "name",
+          "valueString": "Sarah Chen"
+        },
+        {
+          "key": "username",
+          "valueString": "@sarahchen"
+        },
+        {
+          "key": "bio",
+          "valueString": "Product Designer at Tech Co. Creating delightful experiences."
+        },
+        {
+          "key": "followers",
+          "valueString": "12.4K"
+        },
+        {
+          "key": "following",
+          "valueString": "892"
+        },
+        {
+          "key": "posts",
+          "valueString": "347"
+        },
+        {
+          "key": "followText",
+          "valueString": "Follow"
+        }
+      ]
+    }
+  }
+]

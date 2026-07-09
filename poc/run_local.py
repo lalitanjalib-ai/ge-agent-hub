@@ -86,6 +86,7 @@ def main() -> int:
     print("    - What's running in my project?")
     print("    - Does anything need my attention?")
     print("    - I need to deploy a new service")
+    print("    - Show my user profile")
     print("=" * 72)
 
     try:

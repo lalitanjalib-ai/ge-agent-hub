@@ -15,6 +15,7 @@ from widgets.python.builders import (
     resource_detail,
     status_panel,
     surface_messages,
+    user_profile,
 )
 from widgets.python.provider import KpmgWidgetsCatalog
 from widgets.python.theme import KPMG_SURFACE_STYLES, KPMG_THEME
@@ -37,4 +38,5 @@ __all__ = [
     "confirmation_modal",
     "action_bar",
     "surface_messages",
+    "user_profile",
 ]

@@ -21,6 +21,7 @@ EXPECTED_EXAMPLES = {
     "kpmg_metric_card.json",
     "kpmg_resource_dashboard.json",
     "kpmg_status_panel.json",
+    "kpmg_user_profile.json",
 }
 
 
@@ -161,12 +162,27 @@ def main() -> int:
         if not action.get("context"):
             errors.append("view_resource_details button missing action context")
 
+    from widgets.python.builders import user_profile
+
+    profile_payload = user_profile()
+    profile_surface = next(m for m in profile_payload if "surfaceUpdate" in m)
+    profile_ids = {c["id"] for c in profile_surface["surfaceUpdate"]["components"]}
+    for required_id in ("header", "stats_row", "follow_btn", "name", "profile_kpmg_brand"):
+        if required_id not in profile_ids:
+            errors.append(f"user_profile missing component: {required_id}")
+    profile_dm = next(m for m in profile_payload if "dataModelUpdate" in m)
+    profile_name = next(
+        c for c in profile_dm["dataModelUpdate"]["contents"] if c["key"] == "name"
+    )
+    if profile_name.get("valueString") != "Sarah Chen":
+        errors.append("user_profile sample data mismatch")
+
     if errors:
         for err in errors:
             print(f"FAIL: {err}")
         return 1
 
-    print("OK: widgets library has all 7 POC widgets; agent integration verified.")
+    print("OK: widgets library has all 8 POC widgets; agent integration verified.")
     return 0
 
 

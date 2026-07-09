@@ -13,12 +13,13 @@ from action_utils import (
 )
 from resources import (
     consume_pending_detail,
+    consume_pending_profile,
     consume_pending_resources,
     find_resource,
     get_resource_details,
 )
 from widgets.python.a2ui_utils import a2ui_callback, llm_response_from_messages
-from widgets.python.builders import resource_dashboard, resource_detail
+from widgets.python.builders import resource_dashboard, resource_detail, user_profile
 
 
 def _response_already_rendered(llm_response: LlmResponse) -> bool:
@@ -65,6 +66,10 @@ def cloud_dashboard_callback(
     detail = consume_pending_detail()
     if detail:
         return llm_response_from_messages(resource_detail(detail))
+
+    profile = consume_pending_profile()
+    if profile:
+        return llm_response_from_messages(user_profile(profile))
 
     resources = consume_pending_resources()
     if resources:

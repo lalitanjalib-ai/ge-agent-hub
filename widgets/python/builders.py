@@ -1422,6 +1422,307 @@ def resource_detail(
     )
 
 
+SAMPLE_USER_PROFILE: dict[str, Any] = {
+    "avatar": (
+        "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150&h=150&fit=crop"
+    ),
+    "name": "Sarah Chen",
+    "username": "@sarahchen",
+    "bio": "Product Designer at Tech Co. Creating delightful experiences.",
+    "followers": 12400,
+    "following": 892,
+    "posts": 347,
+    "followText": "Follow",
+}
+
+
+def format_compact_number(value: int) -> str:
+    """Compact number display similar to formatNumber (12.4K, 1.2M)."""
+    abs_value = abs(value)
+    if abs_value >= 1_000_000:
+        compact = abs_value / 1_000_000
+        suffix = "M"
+    elif abs_value >= 1_000:
+        compact = abs_value / 1_000
+        suffix = "K"
+    else:
+        return f"{value:,}"
+    text = f"{compact:.1f}{suffix}"
+    return text.replace(f".0{suffix}", suffix)
+
+
+def _user_profile_components() -> list[dict[str, Any]]:
+    """KpmgUserProfile layout: avatar, name, bio, stats row, follow button."""
+    return [
+        {
+            "id": "profile_card",
+            "component": {"Card": {"child": "main_column"}},
+        },
+        {
+            "id": "main_column",
+            "component": {
+                "Column": {
+                    "children": {
+                        "explicitList": [
+                            "profile_kpmg_row",
+                            "header",
+                            "info",
+                            "bio",
+                            "stats_row",
+                            "follow_btn",
+                        ]
+                    },
+                    "alignment": "center",
+                }
+            },
+        },
+        {
+            "id": "profile_kpmg_row",
+            "component": {
+                "Row": {
+                    "children": {
+                        "explicitList": [
+                            "profile_kpmg_spacer",
+                            "profile_kpmg_brand",
+                        ]
+                    },
+                    "alignment": "center",
+                    "distribution": "spaceBetween",
+                }
+            },
+        },
+        {
+            "id": "profile_kpmg_spacer",
+            "component": {
+                "Text": {
+                    "text": {"literalString": ""},
+                    "usageHint": "caption",
+                }
+            },
+        },
+        {
+            "id": "profile_kpmg_brand",
+            "component": {
+                "Text": {
+                    "text": {"literalString": "KPMG"},
+                    "usageHint": "caption",
+                }
+            },
+        },
+        {
+            "id": "header",
+            "component": {
+                "Image": {
+                    "url": {"path": "/avatar"},
+                    "usageHint": "avatar",
+                    "fit": "cover",
+                }
+            },
+        },
+        {
+            "id": "info",
+            "component": {
+                "Column": {
+                    "children": {"explicitList": ["name", "username"]},
+                    "alignment": "center",
+                }
+            },
+        },
+        {
+            "id": "name",
+            "component": {
+                "Text": {
+                    "text": {"path": "/name"},
+                    "usageHint": "h2",
+                }
+            },
+        },
+        {
+            "id": "username",
+            "component": {
+                "Text": {
+                    "text": {"path": "/username"},
+                    "usageHint": "caption",
+                }
+            },
+        },
+        {
+            "id": "bio",
+            "component": {
+                "Text": {
+                    "text": {"path": "/bio"},
+                    "usageHint": "body",
+                }
+            },
+        },
+        {
+            "id": "stats_row",
+            "component": {
+                "Row": {
+                    "children": {
+                        "explicitList": [
+                            "followers_col",
+                            "following_col",
+                            "posts_col",
+                        ]
+                    },
+                    "distribution": "spaceEvenly",
+                }
+            },
+        },
+        {
+            "id": "followers_col",
+            "component": {
+                "Column": {
+                    "children": {
+                        "explicitList": ["followers_count", "followers_label"]
+                    },
+                    "alignment": "center",
+                }
+            },
+        },
+        {
+            "id": "followers_count",
+            "component": {
+                "Text": {
+                    "text": {"path": "/followers"},
+                    "usageHint": "h3",
+                }
+            },
+        },
+        {
+            "id": "followers_label",
+            "component": {
+                "Text": {
+                    "text": {"literalString": "Followers"},
+                    "usageHint": "caption",
+                }
+            },
+        },
+        {
+            "id": "following_col",
+            "component": {
+                "Column": {
+                    "children": {
+                        "explicitList": ["following_count", "following_label"]
+                    },
+                    "alignment": "center",
+                }
+            },
+        },
+        {
+            "id": "following_count",
+            "component": {
+                "Text": {
+                    "text": {"path": "/following"},
+                    "usageHint": "h3",
+                }
+            },
+        },
+        {
+            "id": "following_label",
+            "component": {
+                "Text": {
+                    "text": {"literalString": "Following"},
+                    "usageHint": "caption",
+                }
+            },
+        },
+        {
+            "id": "posts_col",
+            "component": {
+                "Column": {
+                    "children": {
+                        "explicitList": ["posts_count", "posts_label"]
+                    },
+                    "alignment": "center",
+                }
+            },
+        },
+        {
+            "id": "posts_count",
+            "component": {
+                "Text": {
+                    "text": {"path": "/posts"},
+                    "usageHint": "h3",
+                }
+            },
+        },
+        {
+            "id": "posts_label",
+            "component": {
+                "Text": {
+                    "text": {"literalString": "Posts"},
+                    "usageHint": "caption",
+                }
+            },
+        },
+        {
+            "id": "follow_btn",
+            "component": {
+                "Button": {
+                    "child": "follow_btn_text",
+                    "primary": True,
+                    "action": {
+                        "name": "follow",
+                        "context": [
+                            {
+                                "key": "username",
+                                "value": {"path": "/username"},
+                            }
+                        ],
+                    },
+                }
+            },
+        },
+        {
+            "id": "follow_btn_text",
+            "component": {
+                "Text": {
+                    "text": {"path": "/followText"},
+                    "usageHint": "h5",
+                }
+            },
+        },
+    ]
+
+
+def _user_profile_data_contents(profile: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        {"key": "avatar", "valueString": str(profile["avatar"])},
+        {"key": "name", "valueString": str(profile["name"])},
+        {"key": "username", "valueString": str(profile["username"])},
+        {"key": "bio", "valueString": str(profile["bio"])},
+        {
+            "key": "followers",
+            "valueString": format_compact_number(int(profile["followers"])),
+        },
+        {
+            "key": "following",
+            "valueString": format_compact_number(int(profile["following"])),
+        },
+        {
+            "key": "posts",
+            "valueString": format_compact_number(int(profile["posts"])),
+        },
+        {"key": "followText", "valueString": str(profile.get("followText", "Follow"))},
+    ]
+
+
+def user_profile(
+    profile: dict[str, Any] | None = None,
+    surface_id: str = "kpmg-user-profile",
+) -> list[dict[str, Any]]:
+    """KPMG user profile card with avatar, stats, and follow button."""
+    data = dict(profile or SAMPLE_USER_PROFILE)
+    return surface_messages(
+        surface_id=surface_id,
+        root="profile_card",
+        components=_user_profile_components(),
+        data_contents=_user_profile_data_contents(data),
+    )
+
+
 def surface_messages(
     surface_id: str,
     root: str,
