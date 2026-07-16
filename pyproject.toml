@@ -15,6 +15,9 @@ dependencies = [
     "requests>=2.31.0",
 ]
 
+[tool.setuptools.packages.find]
+include = ["agents*", "tools*", "scripts*", "config*"]
+
 [project.scripts]
 deploy = "scripts.deploy:main"
 undeploy = "scripts.undeploy:main"

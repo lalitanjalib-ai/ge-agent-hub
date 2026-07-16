@@ -1,0 +1,112 @@
+# =============================================================================
+# KPMG Audit Issue Tracker Agent Configuration
+# =============================================================================
+# Showcases the WebFrameSrcdoc iframe capability in Gemini Enterprise.
+# Renders a KPMG-branded Jira-style Kanban board in the right-side split panel.
+#
+# To deploy: python scripts/deploy.py audit_issue_tracker
+# To dry-run: python scripts/deploy.py audit_issue_tracker --dry-run
+
+agent:
+  name: "KPMGIframeAuditBoardAgent"
+  display_name: "KPMG Iframe Audit Board"
+  description: >
+    A KPMG audit management agent that renders an interactive Jira-style Kanban
+    board in the Gemini Enterprise side panel. Audit findings are organized by
+    status (Open, In Review, Resolved) with drag-and-drop card moves and
+    click-to-analyze for AI-generated remediation advice. Powered by the
+    WebFrameSrcdoc iframe capability.
+
+  # Use Gemini 2.5 Flash for fast responses (iframe rendering is latency-sensitive)
+  model: "gemini-2.5-flash"
+
+  # No shared tools/ directory tools — all tools are co-located with the agent
+  # The deploy script will pick up the executor from agents/audit_issue_tracker/executor.py
+  tools: []
+
+  # A2UI config — using custom WebFrameSrcdoc catalog (not BasicCatalog)
+  a2ui:
+    version: "0.8"
+    extension_uri: "https://a2ui.org/a2a-extension/a2ui/v0.8"
+    catalog_url: "https://a2ui.org/specification/v0_8/standard_catalog_definition.json"
+
+  # UI actions handled by the executor's _build_query_from_action function
+  actions:
+    cardMoved:
+      template: >
+        CARD_MOVED: The user dragged audit issue {issueKey} ("{issueTitle}")
+        from "{oldState}" to "{newState}". Call update_issue_status with
+        issue_key={issueKey}, new_status={newState}. Then provide a brief
+        confirmation and AI-generated commentary on what this status change
+        means, next steps, and who should be notified.
+
+    issueSelected:
+      template: >
+        ISSUE_SELECTED: The user clicked on audit issue {issueKey}
+        ("{issueTitle}"), Severity: {severity}, Status: {status},
+        Assignee: {assignee}. Provide a detailed AI-generated analysis
+        including risk assessment, root cause, remediation steps, and
+        KPMG best practice guidance.
+
+deploy:
+  region: "us-central1"
+  max_instances: 1
+  api_version: "v1beta1"
+  agent_framework: "google-adk"
+
+  # No extra pip requirements beyond base defaults (no BigQuery needed — data is mocked)
+  extra_requirements: []
+
+  # Extra packages to upload — include the agent's own directory
+  extra_packages:
+    - "agents/iframe_emp_verification"
+
+  # Stable per-agent authorization resource ID for Gemini Enterprise OAuth.
+  # Do NOT change this ID after first deployment.
+  agent_authorization_id: "auth-iframe-audit-board-v2"
+
+  # Environment variables for the deployed agent
+  env_vars:
+    NUM_WORKERS: "1"
+
+  # Access policy — ALL_USERS makes it visible to everyone in the org
+  ge_access_policy: "ALL_USERS"
+
+  # Skills advertised in the A2A agent card
+  skills:
+    - id: "audit-issue-tracker"
+      name: "Audit Issue Tracker"
+      description: >
+        Renders an interactive KPMG-branded Kanban board in the Gemini Enterprise
+        side panel showing audit findings organized by status. Supports drag-and-drop
+        card moves and click-to-analyze for AI-generated remediation advice.
+      tags: ["audit", "kanban", "issues", "kpmg", "iframe", "a2ui"]
+      examples:
+        - "Show me the audit issues for ENG-2024-001"
+        - "Show the Kanban board for Acme Corp"
+        - "What are the open audit findings?"
+        - "Show audit issues"
+        - "Display the issue tracker"
+
+    - id: "audit-issue-analysis"
+      name: "Audit Finding Analysis"
+      description: >
+        Provides AI-generated analysis of specific audit findings including risk
+        assessment, root cause analysis, remediation steps, and KPMG best practice
+        guidance.
+      tags: ["audit", "analysis", "remediation", "kpmg", "risk"]
+      examples:
+        - "Analyze the revenue recognition finding"
+        - "What are the remediation steps for KPMG-001?"
+        - "Tell me more about the IT access management issue"
+
+    - id: "audit-status-management"
+      name: "Audit Status Management"
+      description: >
+        Update the status of audit findings (Open, In Review, Resolved) and
+        receive AI-generated commentary on next steps and stakeholder notifications.
+      tags: ["audit", "status", "update", "kpmg"]
+      examples:
+        - "Move KPMG-001 to In Review"
+        - "Mark KPMG-004 as resolved"
+        - "Update the status of the vendor payment issue"

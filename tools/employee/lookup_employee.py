@@ -8,7 +8,12 @@ from google.cloud import bigquery
 
 logger = logging.getLogger(__name__)
 
-PROJECT_ID = os.environ.get("PROJECT_ID", "kpmg-452019")
+PROJECT_ID = os.environ.get("PROJECT_ID")
+if not PROJECT_ID:
+    raise ValueError(
+        "PROJECT_ID environment variable is not set. "
+        "Please set it in your .env file or environment before running."
+    )
 DATASET_ID = "employee_verification"
 TABLE_ID = "employee_records"
 FULL_TABLE = f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}"

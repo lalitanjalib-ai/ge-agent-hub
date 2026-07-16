@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KPMG Audit Board</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;font-family:system-ui,sans-serif;font-size:13px}
+body{background:#0f172a;color:#f1f5f9;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+.hdr{background:linear-gradient(135deg,#001F5B,#00338D,#0047BB);padding:8px 14px;display:flex;align-items:center;justify-content:space-between;border-bottom:2px solid #0047BB;flex-shrink:0}
+.logo{font-weight:900;color:#fff;background:rgba(255,255,255,.15);padding:2px 7px;border-radius:3px;letter-spacing:.08em}
+.htitle{font-size:.85rem;font-weight:700;color:#fff;margin-left:8px}
+.hsub{font-size:.65rem;color:rgba(255,255,255,.7)}
+.badge{background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.3);color:#fff;padding:2px 8px;border-radius:12px;font-size:.65rem;font-weight:600}
+.kpis{display:flex;gap:6px;padding:6px 14px;background:#1e293b;border-bottom:1px solid #1e3a5f;flex-shrink:0}
+.kpi{flex:1;background:#0f172a;border:1px solid #1e3a5f;border-radius:6px;padding:4px 8px;text-align:center}
+.kv{font-size:1.1rem;font-weight:800}
+.kl{font-size:.58rem;color:#64748b;text-transform:uppercase;letter-spacing:.04em}
+.kt .kv{color:#3b82f6}.kh .kv{color:#ef4444}.kr .kv{color:#a855f7}.ks .kv{color:#10b981}
+.board{display:flex;gap:8px;padding:8px 14px;flex:1;overflow:hidden}
+.col{flex:1;background:#162032;border:1px solid #1e3a5f;border-radius:8px;display:flex;flex-direction:column;overflow:hidden}
+.ch{padding:6px 10px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #1e3a5f;flex-shrink:0}
+.ct{display:flex;align-items:center;gap:5px;font-weight:700;font-size:.72rem;text-transform:uppercase;letter-spacing:.04em}
+.dot{width:7px;height:7px;border-radius:50%}
+.cnt{background:rgba(255,255,255,.08);color:#94a3b8;font-size:.62rem;font-weight:700;padding:1px 6px;border-radius:8px}
+.co .dot{background:#3b82f6}.co .ct{color:#3b82f6}
+.cr .dot{background:#a855f7}.cr .ct{color:#a855f7}
+.cs .dot{background:#10b981}.cs .ct{color:#10b981}
+.cb{flex:1;overflow-y:auto;padding:6px;display:flex;flex-direction:column;gap:5px}
+.cb::-webkit-scrollbar{width:3px}.cb::-webkit-scrollbar-thumb{background:#1e3a5f;border-radius:2px}
+.card{background:#1e293b;border:1px solid #1e3a5f;border-radius:6px;padding:8px;cursor:grab;user-select:none;transition:border-color .15s}
+.card:hover{border-color:#0047BB}.card.dragging{opacity:.5;cursor:grabbing}
+.ct2{display:flex;align-items:center;justify-content:space-between;margin-bottom:5px}
+.ik{font-size:.62rem;font-weight:700;color:#0047BB;background:rgba(0,71,187,.15);padding:1px 5px;border-radius:3px}
+.sb{font-size:.58rem;font-weight:700;padding:1px 6px;border-radius:8px;text-transform:uppercase}
+.sh{background:rgba(239,68,68,.12);color:#ef4444}.sm{background:rgba(245,158,11,.12);color:#f59e0b}.sl{background:rgba(16,185,129,.12);color:#10b981}
+.ti{font-size:.75rem;font-weight:600;line-height:1.3;margin-bottom:6px}
+.meta{display:flex;align-items:center;justify-content:space-between}
+.av{display:flex;align-items:center;gap:4px;font-size:.62rem;color:#94a3b8}
+.avc{width:18px;height:18px;border-radius:50%;background:linear-gradient(135deg,#00338D,#0047BB);display:flex;align-items:center;justify-content:center;font-size:.55rem;font-weight:700;color:#fff;flex-shrink:0}
+.dt{font-size:.58rem;color:#64748b}
+.cb.over{background:rgba(0,71,187,.08);border-radius:5px}
+.empty{text-align:center;color:#64748b;font-size:.68rem;padding:16px 8px}
+.loading{text-align:center;color:#64748b;font-size:.75rem;padding:20px;flex:1;display:flex;align-items:center;justify-content:center}
+</style>
+</head>
+<body>
+<div class="hdr">
+  <div style="display:flex;align-items:center">
+    <div class="logo">KPMG</div>
+    <div style="margin-left:8px">
+      <div class="htitle">Iframe Audit Board</div>
+      <div class="hsub" id="en">Loading...</div>
+    </div>
+  </div>
+  <div class="badge" id="ei">-</div>
+</div>
+<div class="kpis">
+  <div class="kpi kt"><div class="kv" id="kt">0</div><div class="kl">Total</div></div>
+  <div class="kpi kh"><div class="kv" id="kh">0</div><div class="kl">High</div></div>
+  <div class="kpi kr"><div class="kv" id="kr">0</div><div class="kl">Review</div></div>
+  <div class="kpi ks"><div class="kv" id="ks">0</div><div class="kl">Resolved</div></div>
+</div>
+<div class="board">
+  <div class="col co">
+    <div class="ch"><div class="ct"><span class="dot"></span>Open</div><span class="cnt" id="cOpen">0</span></div>
+    <div class="cb" id="bOpen" ondragover="ov(event)" ondragleave="ol(event)" ondrop="dp(event,'Open')"></div>
+  </div>
+  <div class="col cr">
+    <div class="ch"><div class="ct"><span class="dot"></span>In Review</div><span class="cnt" id="cIn Review">0</span></div>
+    <div class="cb" id="bIn Review" ondragover="ov(event)" ondragleave="ol(event)" ondrop="dp(event,'In Review')"></div>
+  </div>
+  <div class="col cs">
+    <div class="ch"><div class="ct"><span class="dot"></span>Resolved</div><span class="cnt" id="cResolved">0</span></div>
+    <div class="cb" id="bResolved" ondragover="ov(event)" ondragleave="ol(event)" ondrop="dp(event,'Resolved')"></div>
+  </div>
+</div>
+<script>
+var issues = [], dk = null, ds = null;
+
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function render() {
+  ['Open','In Review','Resolved'].forEach(function(c) {
+    var b = document.getElementById('b'+c);
+    var items = issues.filter(function(i) { return i.status === c; });
+    document.getElementById('c'+c).textContent = items.length;
+    b.innerHTML = '';
+    if (!items.length) { b.innerHTML = '<div class="empty">No issues</div>'; return; }
+    items.forEach(function(i) {
+      var ini = i.assignee.split(' ').map(function(n){return n[0];}).join('').substring(0,2);
+      var sc = 's' + i.severity[0].toLowerCase();
+      var d = document.createElement('div');
+      d.className = 'card'; d.draggable = true; d.dataset.k = i.key;
+      d.innerHTML = '<div class="ct2"><span class="ik">'+esc(i.key)+'</span><span class="sb '+sc+'">'+esc(i.severity)+'</span></div><div class="ti">'+esc(i.title)+'</div><div class="meta"><div class="av"><div class="avc">'+esc(ini)+'</div><span>'+esc(i.assignee)+'</span></div><span class="dt">'+esc(i.date)+'</span></div>';
+      d.addEventListener('dragstart', function(e) { dk=i.key; ds=i.status; d.classList.add('dragging'); e.dataTransfer.effectAllowed='move'; });
+      d.addEventListener('dragend', function() { d.classList.remove('dragging'); });
+      d.addEventListener('click', function() {
+        window.parent.postMessage({type:'a2ui_action',action:'issueSelected',data:{issueKey:i.key,issueTitle:i.title,severity:i.severity,status:i.status,assignee:i.assignee,widgetId:'kpmg-audit-board'}},'*');
+      });
+      b.appendChild(d);
+    });
+  });
+  document.getElementById('kt').textContent = issues.length;
+  document.getElementById('kh').textContent = issues.filter(function(i){return i.severity==='High';}).length;
+  document.getElementById('kr').textContent = issues.filter(function(i){return i.status==='In Review';}).length;
+  document.getElementById('ks').textContent = issues.filter(function(i){return i.status==='Resolved';}).length;
+}
+
+function ov(e) { e.preventDefault(); e.currentTarget.classList.add('over'); }
+function ol(e) { e.currentTarget.classList.remove('over'); }
+function dp(e, ns) {
+  e.preventDefault(); e.currentTarget.classList.remove('over');
+  if (!dk || ds === ns) return;
+  var i = issues.find(function(x){return x.key===dk;});
+  if (!i) return;
+  var os = i.status; i.status = ns; render();
+  window.parent.postMessage({type:'a2ui_action',action:'cardMoved',data:{issueKey:dk,issueTitle:i.title,oldState:os,newState:ns,widgetId:'kpmg-audit-board'}},'*');
+}
+
+function init(d) {
+  issues = (d && d.issues) ? d.issues : [];
+  document.getElementById('en').textContent = (d && d.engagement_name) ? d.engagement_name : '';
+  document.getElementById('ei').textContent = (d && d.engagement_id) ? d.engagement_id : '';
+  render();
+}
+
+// Listen for data from GE via postMessage (dataModelUpdate mechanism)
+window.addEventListener('message', function(event) {
+  var data = event.data;
+  if (!data) return;
+  // GE sends INJECT_DATA with the data model contents
+  if (data.type === 'INJECT_DATA') {
+    var payload = data.payload || {};
+    // Try to parse issues_data from the data model
+    var issuesData = payload.issues_data || payload;
+    if (typeof issuesData === 'string') {
+      try { issuesData = JSON.parse(issuesData); } catch(e) {}
+    }
+    init(issuesData);
+    return;
+  }
+  // Also handle direct data injection
+  if (data.type === 'KPMG_AUDIT_DATA') {
+    init(data.payload || {});
+    return;
+  }
+  // Handle URL param data (fallback)
+  if (data.issues) {
+    init(data);
+  }
+});
+
+// Try to load data from URL query params (fallback for direct URL access)
+window.addEventListener('load', function() {
+  // Signal ready to parent
+  if (window.parent && window.parent !== window) {
+    window.parent.postMessage({ type: 'IFRAME_READY' }, '*');
+  }
+  // Try URL params
+  try {
+    var params = new URLSearchParams(window.location.search);
+    var dataParam = params.get('data');
+    if (dataParam) {
+      var decoded = JSON.parse(atob(dataParam));
+      init(decoded);
+      return;
+    }
+  } catch(e) {}
+  // Show loading state
+  ['Open','In Review','Resolved'].forEach(function(c) {
+    var b = document.getElementById('b'+c);
+    if (b && !b.children.length) {
+      b.innerHTML = '<div class="empty">Waiting for data...</div>';
+    }
+  });
+});
+</script>
+</body>
+</html>

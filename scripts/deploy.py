@@ -328,14 +328,18 @@ def deploy_agent(agent_name: str, dry_run: bool = False) -> bool:
         print(f"  ✗ Could not import executor from {executor_module_path}: {e}")
         return False
 
-    # Find the executor class (first subclass of AgentExecutor in the module)
+    # Find the executor class (first AgentExecutor subclass in the module)
+    # Supports both BaseA2UIExecutor subclasses (have AGENT_CONFIG_NAME) and
+    # standalone executors like AuditIssueTrackerExecutor (have no AGENT_CONFIG_NAME).
     executor_class = None
+    from a2a.server.agent_execution import AgentExecutor as _AgentExecutor
     for attr_name in dir(executor_module):
         attr = getattr(executor_module, attr_name)
         if (
             isinstance(attr, type)
-            and hasattr(attr, "AGENT_CONFIG_NAME")
-            and attr_name != "BaseA2UIExecutor"
+            and issubclass(attr, _AgentExecutor)
+            and attr is not _AgentExecutor
+            and attr_name not in ("BaseA2UIExecutor", "AgentExecutor")
         ):
             executor_class = attr
             break
