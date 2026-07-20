@@ -126,6 +126,14 @@ def _get_de_hostname(ge_location: str) -> str:
     return f"{ge_location}-discoveryengine.googleapis.com"
 
 
+# GE's deletion of a prior agent registration is eventually consistent: the
+# authorization resource can appear "in use" for a few seconds after the
+# owning agent was deleted. Retry registration with backoff instead of
+# failing immediately on this specific, transient 400.
+_AUTH_IN_USE_MARKER = "is used by another agent"
+_REGISTER_RETRY_DELAYS = (3, 6, 10)  # seconds, applied between attempts
+
+
 def _register_agent_on_gemini_enterprise(
     project_id: str,
     app_id: str,
@@ -143,6 +151,10 @@ def _register_agent_on_gemini_enterprise(
     ge_registration:
       - ``adk`` — link GE to a provisioned Reasoning Engine (adkAgentDefinition)
       - ``a2a`` — GE calls the A2A URL from jsonAgentCard (a2aAgentDefinition)
+
+    Retries automatically if the authorization resource momentarily reports
+    "is used by another agent" — a transient race after unregistering the
+    previous agent that owned it (GE agent deletion is eventually consistent).
     """
     de_hostname = _get_de_hostname(ge_location)
     api_endpoint = (
@@ -184,10 +196,30 @@ def _register_agent_on_gemini_enterprise(
         "X-Goog-User-Project": project_id,
     }
 
-    response = requests.post(api_endpoint, headers=headers, json=payload, verify=_SSL_VERIFY)
+    attempts = len(_REGISTER_RETRY_DELAYS) + 1
+    response = None
+    for attempt in range(1, attempts + 1):
+        response = requests.post(
+            api_endpoint, headers=headers, json=payload, verify=_SSL_VERIFY
+        )
 
-    if response.status_code == 200:
-        return response.json()
+        if response.status_code == 200:
+            return response.json()
+
+        is_auth_lock = (
+            response.status_code == 400
+            and _AUTH_IN_USE_MARKER in response.text
+        )
+        if is_auth_lock and attempt <= len(_REGISTER_RETRY_DELAYS):
+            delay = _REGISTER_RETRY_DELAYS[attempt - 1]
+            print(
+                f"  ⏳ Auth resource momentarily locked by the just-removed "
+                f"agent (attempt {attempt}/{attempts}) — retrying in {delay}s..."
+            )
+            time.sleep(delay)
+            continue
+
+        break
 
     # Log the full error for debugging — always show the complete response body
     print(f"  ✗ GE registration failed (HTTP {response.status_code})")
@@ -195,6 +227,17 @@ def _register_agent_on_gemini_enterprise(
     print(f"    Response: {response.text}")
     if agent_authorization:
         print(f"    Auth resource used: {agent_authorization}")
+    if response.status_code == 400 and _AUTH_IN_USE_MARKER in response.text:
+        auth_id_hint = (
+            agent_authorization.rsplit("/", 1)[-1] if agent_authorization else "<AUTH_ID>"
+        )
+        print(
+            "    ℹ The authorization resource is still locked after retries. "
+            "Force-recreate it and try again:\n"
+            f"      python scripts/setup_agent_auth.py --id {auth_id_hint} --force\n"
+            "      python scripts/deploy.py <agent> --register-only "
+            "--reasoning-engine <RESOURCE_ID>"
+        )
     return None
 
 

@@ -121,6 +121,40 @@ def _looks_like_entra_jwt(value: object) -> bool:
     )
 
 
+def _classify_entra_token_type(token: str) -> str:
+    """Best-effort classification of a forwarded Entra JWT as 'id_token' or
+    'access_token' based on its claims, so a mismatch against the configured
+    ``WIF_SUBJECT_TOKEN_TYPE`` can be logged loudly instead of silently
+    producing an STS 401/400.
+
+    Heuristics (Entra v2.0 tokens):
+      * id_tokens carry ``nonce`` and/or a top-level ``aud`` equal to the
+        client (app) ID with no ``scp``/``roles`` claim structure typical of
+        API access tokens.
+      * access_tokens carry ``scp`` (delegated scopes) or ``roles`` (app
+        roles) and their ``aud`` is the target API's Application ID URI
+        (e.g. ``api://<APP_ID>``), not the client ID requesting the token.
+
+    Returns 'id_token', 'access_token', or 'unknown' if it cannot tell.
+    """
+    try:
+        claims = _decode_jwt_claims(token)
+    except (ValueError, binascii.Error, json.JSONDecodeError, IndexError):
+        return "unknown"
+
+    aud = claims.get("aud", "")
+    has_scp_or_roles = bool(claims.get("scp") or claims.get("roles"))
+    looks_like_api_audience = isinstance(aud, str) and (
+        aud.startswith("api://") or "/" in aud
+    )
+
+    if has_scp_or_roles or looks_like_api_audience:
+        return "access_token"
+    if "nonce" in claims:
+        return "id_token"
+    return "unknown"
+
+
 def find_entra_token_in_mapping(state: Mapping[str, Any] | None) -> str | None:
     """Scan a mapping's values for a Microsoft-issued JWT.
 
@@ -151,6 +185,7 @@ def extract_user_token(context: Any) -> str | None:
       1. ``message.metadata.authorizations`` (GE forwarded-token shape)
       2. ``message.metadata`` direct token keys
       3. ``call_context.state`` — ``authorizations`` / headers / token keys
+
       4. Issuer-based scan of metadata / state values (Microsoft-issued JWT)
       5. HTTP ``Authorization: Bearer`` header captured by ASGI middleware
     """
@@ -214,7 +249,32 @@ def extract_user_token(context: Any) -> str | None:
     except Exception:  # middleware is optional
         pass
 
-    logger.info("OBO: no forwarded user token found on request (will fall back to ADC)")
+    # Nothing matched. Log the *shapes* of what we actually received (never
+    # values / token contents) so a real mismatch between GE's forwarding
+    # format and our extraction logic (e.g. the suspected "parts vs content"
+    # protocol difference) can be diagnosed from Cloud Logging without
+    # guessing. This is the #1 diagnostic gap once Conditional Access is
+    # unblocked and end-to-end GE testing resumes.
+    try:
+        metadata_keys = list(metadata.keys()) if isinstance(metadata, dict) else None
+        state_keys = list(state.keys()) if isinstance(state, dict) else None
+        message_parts_types = None
+        parts = getattr(message, "parts", None) if message else None
+        if parts:
+            message_parts_types = [type(getattr(p, "root", p)).__name__ for p in parts]
+        logger.info(
+            "OBO: no forwarded user token found on request — diagnostic shape: "
+            "message.metadata keys=%s, call_context.state keys=%s, "
+            "message.parts types=%s, has_message=%s, has_call_context=%s",
+            metadata_keys,
+            state_keys,
+            message_parts_types,
+            message is not None,
+            call_context is not None,
+        )
+    except Exception:  # noqa: BLE001 — diagnostic logging must never break the request
+        logger.info("OBO: no forwarded user token found on request (will fall back to ADC)")
+
     return None
 
 
@@ -264,5 +324,17 @@ def get_user_gcp_credentials(
             quota_project_id=quota_project_id,
         )
     except Exception as exc:  # noqa: BLE001 — surface as ADC fallback, but log
-        logger.error("OBO: failed to exchange user token via STS: %s", exc)
+        # A forwarded user token was present but the STS exchange failed (bad
+        # WIF config, missing WORKFORCE_POOL_ID/PROVIDER_ID env vars on the
+        # deployed Reasoning Engine, network/SSL error, expired/invalid token,
+        # audience mismatch, etc). Callers (bq_client) will fall back to ADC —
+        # which means the query silently runs as the SERVICE ACCOUNT instead
+        # of the user. Log this loudly and distinctly so it is easy to find
+        # in Cloud Logging (grep for "OBO STS EXCHANGE FAILED").
+        logger.error(
+            "OBO STS EXCHANGE FAILED — a forwarded user token was present but "
+            "could not be exchanged for a Google credential; caller will fall "
+            "back to ADC (service account) unless STRICT_OBO is enabled: %s",
+            exc,
+        )
         return None

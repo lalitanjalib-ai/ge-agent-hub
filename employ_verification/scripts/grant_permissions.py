@@ -105,8 +105,15 @@ def main():
         ("roles/aiplatform.user", de_sa),
         ("roles/aiplatform.viewer", de_sa),
 
-        # Reasoning Engine Service Agent permissions (used for ADC fallback)
-        ("roles/bigquery.admin", re_sa),
+        # Reasoning Engine Service Agent permissions (used for ADC fallback —
+        # i.e. only when NO forwarded user token is present, machine-to-machine
+        # calls, or OBO fails). Scoped to least-privilege for what the agent's
+        # tools actually do: SELECT (lookup_employee) and UPDATE (verify /
+        # update_employee_field) on the employee_verification dataset. Avoid
+        # roles/bigquery.admin — it grants dataset/table create-delete and
+        # IAM-policy management the service account never needs.
+        ("roles/bigquery.dataEditor", re_sa),
+        ("roles/bigquery.jobUser", re_sa),
         ("roles/discoveryengine.viewer", re_sa),
 
         # On-Behalf-Of: the Workforce-federated users (the whole pool) must be
@@ -122,6 +129,7 @@ def main():
     ]
 
     # Optionally scope the same BigQuery access to a single named user.
+
     if user_email:
         user_principal = (
             f"principal://iam.googleapis.com/locations/{pool_location}/"

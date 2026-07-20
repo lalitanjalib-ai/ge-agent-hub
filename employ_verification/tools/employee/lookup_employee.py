@@ -2,15 +2,13 @@
 
 import json
 import logging
-import os
 
 from google.cloud import bigquery
 
-from tools.employee.bq_client import get_bigquery_client
+from tools.employee.bq_client import get_bigquery_client, PROJECT_ID
 
 logger = logging.getLogger(__name__)
 
-PROJECT_ID = os.environ.get("PROJECT_ID", "kpmg-452019")
 DATASET_ID = "employee_verification"
 TABLE_ID = "employee_records"
 FULL_TABLE = f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}"

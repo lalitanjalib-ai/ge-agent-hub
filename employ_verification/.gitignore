@@ -8,3 +8,10 @@ __pycache__/
 dist/
 build/
 .pytest_cache/
+
+# Manual OBO/WIF testing artifacts — these contain live Entra tokens and
+# must never be committed (see scripts/get_entra_token.py).
+.entra_token.tmp
+*.entra_token.tmp
+
+
