@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 
 from google.cloud import bigquery
 
+from tools.employee.bq_client import get_bigquery_client
+
 logger = logging.getLogger(__name__)
 
 PROJECT_ID = os.environ.get("PROJECT_ID", "kpmg-452019")
@@ -34,7 +36,7 @@ def verify_employee(employee_id: str) -> str:
     logger.info(f"  - employee_id: {employee_id}")
 
     try:
-        client = bigquery.Client(project=PROJECT_ID)
+        client = get_bigquery_client()
 
         now = datetime.now(timezone.utc).isoformat()
 

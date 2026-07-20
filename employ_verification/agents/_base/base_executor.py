@@ -42,6 +42,12 @@ from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.genai import types
 
 from agents._base.config_loader import load_agent_config
+from agents._base.user_context import (
+    extract_user_token,
+    find_entra_token_in_mapping,
+    reset_user_token,
+    set_user_token,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -224,12 +230,19 @@ class BaseA2UIExecutor(AgentExecutor):
 
         logger.info(f"{self.__class__.__name__} executing query: {query}")
 
+        # On-Behalf-Of: capture the user token forwarded by Gemini Enterprise so
+        # downstream tools can act as the logged-in user (see agents/_base/user_context).
+        user_token = extract_user_token(context)
+
         updater = TaskUpdater(event_queue, context.task_id, context.context_id)
         await updater.submit()
         await updater.start_work()
 
+        token_reset = None
         try:
-            # Get or create session
+            # Get or create session. Seed the forwarded user token into session
+            # state so ADK-native auth-aware tools can also consume it.
+            initial_state = {"ge_user_token": user_token} if user_token else {}
             session = await self.runner.session_service.get_session(
                 app_name=self.runner.app_name,
                 user_id="user",
@@ -239,9 +252,34 @@ class BaseA2UIExecutor(AgentExecutor):
                 session = await self.runner.session_service.create_session(
                     app_name=self.runner.app_name,
                     user_id="user",
-                    state={},
+                    state=initial_state,
                     session_id=context.context_id,
                 )
+            elif user_token:
+                # Refresh token on existing sessions — GE forwards per-request but
+                # Agent Engine reuses session state across turns in the same context.
+                state = getattr(session, "state", None)
+                if isinstance(state, dict):
+                    state["ge_user_token"] = user_token
+
+            # Fallback: some hosting paths (e.g. GE Agent Runtime) inject the
+            # Entra token directly into ADK session state under an undocumented
+            # key. If request-level extraction found nothing, scan the resolved
+            # session state for a Microsoft-issued JWT.
+            if not user_token and session is not None:
+                session_token = find_entra_token_in_mapping(
+                    getattr(session, "state", None)
+                )
+                if session_token:
+                    logger.info("OBO: Entra JWT found by issuer scan of ADK session state")
+                    user_token = session_token
+
+            if user_token:
+                logger.info("OBO: forwarded user token resolved — tools will run on behalf of the user")
+            else:
+                logger.info("OBO: no forwarded user token — tools will fall back to ADC (service account)")
+
+            token_reset = set_user_token(user_token)
 
             content = types.Content(role="user", parts=[types.Part(text=query)])
 
@@ -289,10 +327,14 @@ class BaseA2UIExecutor(AgentExecutor):
                 message=Message(
                     message_id=str(uuid.uuid4()),
                     role=Role.agent,
-                    parts=[TextPart(text=f"An error occurred: {str(e)}")]
+                    parts=[Part(root=TextPart(text=f"An error occurred: {str(e)}"))],
                 ),
             )
-            raise
+            return
+        finally:
+            # Always clear the per-request user token from the context.
+            if token_reset is not None:
+                reset_user_token(token_reset)
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue):
         raise ServerError(error=UnsupportedOperationError())

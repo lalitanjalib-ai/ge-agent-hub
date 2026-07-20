@@ -64,10 +64,18 @@ elif _ssl_verify_env:
 elif os.environ.get("REQUESTS_CA_BUNDLE"):
     _SSL_VERIFY = os.environ.get("REQUESTS_CA_BUNDLE")
 
-# Authorization resources are ALWAYS in the global Discovery Engine location,
-# regardless of where the Gemini Enterprise app is provisioned.
-_AUTH_LOCATION = "global"
-_AUTH_DE_HOSTNAME = "discoveryengine.googleapis.com"
+# Authorization resources live in the same Discovery Engine location as the GE app
+# ('global', 'us', or 'eu'). Regional GE apps (GE_LOCATION=us) cannot attach
+# global authorizations during agent registration.
+def _auth_location() -> str:
+    loc = os.environ.get("GE_LOCATION", "global").strip().lower()
+    return loc if loc in ("global", "us", "eu") else "global"
+
+
+def _auth_de_hostname(auth_location: str) -> str:
+    if auth_location == "global":
+        return "discoveryengine.googleapis.com"
+    return f"{auth_location}-discoveryengine.googleapis.com"
 
 
 # =============================================================================
@@ -121,10 +129,12 @@ def _check_auth_exists(
     Note: Authorization resources are always in the global Discovery Engine location,
     regardless of where the Gemini Enterprise app is provisioned.
     """
-    # Auth resources are always global — ignore ge_location for the auth API
+    # Auth API location matches GE app region
+    auth_location = _auth_location()
+    auth_hostname = _auth_de_hostname(auth_location)
     url = (
-        f"https://{_AUTH_DE_HOSTNAME}/v1alpha/projects/{project_number}/"
-        f"locations/{_AUTH_LOCATION}/authorizations/{auth_id}"
+        f"https://{auth_hostname}/v1alpha/projects/{project_number}/"
+        f"locations/{auth_location}/authorizations/{auth_id}"
     )
 
     bearer_token = _get_bearer_token()
@@ -152,10 +162,11 @@ def _delete_auth(
 
     Note: Authorization resources are always in the global Discovery Engine location.
     """
-    # Auth resources are always global
+    auth_location = _auth_location()
+    auth_hostname = _auth_de_hostname(auth_location)
     url = (
-        f"https://{_AUTH_DE_HOSTNAME}/v1alpha/projects/{project_number}/"
-        f"locations/{_AUTH_LOCATION}/authorizations/{auth_id}"
+        f"https://{auth_hostname}/v1alpha/projects/{project_number}/"
+        f"locations/{auth_location}/authorizations/{auth_id}"
     )
 
     bearer_token = _get_bearer_token()
@@ -173,21 +184,18 @@ def _delete_auth(
 
 def _create_auth(
     project_number: str,
-    ge_location: str,  # kept for API compatibility but auth is always global
+    ge_location: str,  # kept for API compatibility
     auth_id: str,
     project_id: str,
     oauth_client_id: str,
     oauth_client_secret: str,
 ) -> dict | None:
-    """Create a new authorization resource.
-
-    Note: Authorization resources are always in the global Discovery Engine location,
-    regardless of where the Gemini Enterprise app is provisioned.
-    """
-    # Auth resources are always global
+    """Create a new authorization resource in the GE app's Discovery Engine region."""
+    auth_location = _auth_location()
+    auth_hostname = _auth_de_hostname(auth_location)
     url = (
-        f"https://{_AUTH_DE_HOSTNAME}/v1alpha/projects/{project_number}/"
-        f"locations/{_AUTH_LOCATION}/authorizations?authorizationId={auth_id}"
+        f"https://{auth_hostname}/v1alpha/projects/{project_number}/"
+        f"locations/{auth_location}/authorizations?authorizationId={auth_id}"
     )
 
     # Build the authorization URI — GE requires the full OAuth2 authorization URL
@@ -341,6 +349,12 @@ Examples:
     # Validate required env vars
     if not project_id:
         print("✗ PROJECT_ID is not set in .env")
+        sys.exit(1)
+
+    if not args.check and (not oauth_client_secret or oauth_client_secret.strip() == "CHANGE_ME"):
+        print("✗ OAUTH_CLIENT_SECRET is not set in .env (still CHANGE_ME?)")
+        print("  Get the client secret for Entra app matching OAUTH_CLIENT_ID from Azure Portal.")
+        print("  It MUST match the WIF provider's oidc.clientId (azure-dev-oidc-provider).")
         sys.exit(1)
 
     if not args.check and not oauth_client_id:

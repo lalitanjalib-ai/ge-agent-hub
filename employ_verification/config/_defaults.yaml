@@ -23,11 +23,13 @@ deploy:
     - "google-genai>=1.27.0"
     - "python-dotenv>=1.1.0"
     - "uvicorn"
-    - "a2a-sdk>=0.3.4,<1.0.0"
+    - "a2a-sdk[http-server]>=0.3.4,<1.0.0"
     - "cloudpickle>=3.1.2"
     - "pydantic"
     - "jsonschema>=4.0.0"
     - "a2ui-agent-sdk>=0.1.2"
+    # Used for the STS token-exchange call (Entra -> Workforce Identity token)
+    - "requests>=2.31.0"
 
   # Default input/output modes for A2A agent card
   default_input_modes:

@@ -6,6 +6,8 @@ import os
 
 from google.cloud import bigquery
 
+from tools.employee.bq_client import get_bigquery_client
+
 logger = logging.getLogger(__name__)
 
 PROJECT_ID = os.environ.get("PROJECT_ID", "kpmg-452019")
@@ -38,7 +40,7 @@ def lookup_employee(
     logger.info(f"  - name: {name}, employee_id: {employee_id}, department: {department}")
 
     try:
-        client = bigquery.Client(project=PROJECT_ID)
+        client = get_bigquery_client()
 
         conditions = []
         params = []

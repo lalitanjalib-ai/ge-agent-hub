@@ -37,6 +37,12 @@ def _get_bearer_token() -> str | None:
         print("    Please run: gcloud auth application-default login")
         return None
 
+from scripts.setup_agent_auth import _get_project_number, _SSL_VERIFY
+
+def _ssl_verify():
+    return False if _SSL_VERIFY is False else _SSL_VERIFY
+
+
 def main():
     load_dotenv(_PROJECT_ROOT / ".env", override=True)
     
@@ -44,12 +50,29 @@ def main():
     if not project_id:
         print("[ERROR] PROJECT_ID is not set in .env")
         sys.exit(1)
-        
+
     print("=" * 80)
     print("  Agent Framework — Grant IAM Permissions Helper")
     print(f"  Project: {project_id}")
     print("=" * 80)
     print()
+
+    print("  Resolving project number...")
+    project_number = _get_project_number(project_id)
+    if not project_number:
+        print("[ERROR] Could not resolve project number. Run: gcloud auth application-default login")
+        sys.exit(1)
+    print(f"  Project number: {project_number}")
+    print()
+
+    # Workforce Identity Federation config (drives the On-Behalf-Of bindings).
+    pool_id = os.environ.get("WORKFORCE_POOL_ID", "azure-oidc-agentspace-dev-app")
+    pool_location = os.environ.get("WORKFORCE_POOL_LOCATION", "global")
+    user_email = os.environ.get("GE_USER_PERMISSION", "").strip()
+    pool_principal_set = (
+        f"principalSet://iam.googleapis.com/locations/{pool_location}/"
+        f"workforcePools/{pool_id}/*"
+    )
     
     token = _get_bearer_token()
     if not token:
@@ -64,29 +87,53 @@ def main():
     print(f"Fetching current IAM policy for project '{project_id}'...")
     get_url = f"https://cloudresourcemanager.googleapis.com/v1/projects/{project_id}:getIamPolicy"
     
-    response = requests.post(get_url, headers=headers, json={}, verify=False)
+    response = requests.post(get_url, headers=headers, json={}, verify=_ssl_verify())
     if response.status_code != 200:
         print(f"  [ERROR] Failed to fetch IAM policy (HTTP {response.status_code}): {response.text}")
         sys.exit(1)
         
     policy = response.json()
     bindings = policy.get("bindings", [])
+
+    de_sa = f"serviceAccount:service-{project_number}@gcp-sa-discoveryengine.iam.gserviceaccount.com"
+    re_sa = f"serviceAccount:service-{project_number}@gcp-sa-aiplatform-re.iam.gserviceaccount.com"
     
     # 2. Define the required permissions to add
     # Format: (role, member)
     required_bindings = [
-        # Workforce Identity Federated User permissions
-        ("roles/aiplatform.user", "principal://iam.googleapis.com/locations/global/workforcePools/azure-oidc-agentspace-dev-app/subject/pengwang3@kpmg.com"),
-        ("roles/aiplatform.viewer", "principal://iam.googleapis.com/locations/global/workforcePools/azure-oidc-agentspace-dev-app/subject/pengwang3@kpmg.com"),
-        
         # Discovery Engine Service Account permissions
-        ("roles/aiplatform.user", "serviceAccount:service-901535160018@gcp-sa-discoveryengine.iam.gserviceaccount.com"),
-        ("roles/aiplatform.viewer", "serviceAccount:service-901535160018@gcp-sa-discoveryengine.iam.gserviceaccount.com"),
-        
-        # Reasoning Engine Service Agent permissions
-        ("roles/bigquery.admin", "serviceAccount:service-901535160018@gcp-sa-aiplatform-re.iam.gserviceaccount.com"),
-        ("roles/discoveryengine.viewer", "serviceAccount:service-901535160018@gcp-sa-aiplatform-re.iam.gserviceaccount.com"),
+        ("roles/aiplatform.user", de_sa),
+        ("roles/aiplatform.viewer", de_sa),
+
+        # Reasoning Engine Service Agent permissions (used for ADC fallback)
+        ("roles/bigquery.admin", re_sa),
+        ("roles/discoveryengine.viewer", re_sa),
+
+        # On-Behalf-Of: the Workforce-federated users (the whole pool) must be
+        # able to invoke the agent AND read/run BigQuery jobs as themselves.
+        ("roles/aiplatform.user", pool_principal_set),
+        ("roles/aiplatform.viewer", pool_principal_set),
+        ("roles/bigquery.dataViewer", pool_principal_set),
+        ("roles/bigquery.jobUser", pool_principal_set),
+        # Workforce identities have no project of their own; STS-issued tokens
+        # need a billing/quota project (options.userProject / X-Goog-User-Project).
+        # Without this binding the FIRST downstream Google API call returns 403.
+        ("roles/serviceusage.serviceUsageConsumer", pool_principal_set),
     ]
+
+    # Optionally scope the same BigQuery access to a single named user.
+    if user_email:
+        user_principal = (
+            f"principal://iam.googleapis.com/locations/{pool_location}/"
+            f"workforcePools/{pool_id}/subject/{user_email}"
+        )
+        required_bindings.extend([
+            ("roles/aiplatform.user", user_principal),
+            ("roles/aiplatform.viewer", user_principal),
+            ("roles/bigquery.dataViewer", user_principal),
+            ("roles/bigquery.jobUser", user_principal),
+            ("roles/serviceusage.serviceUsageConsumer", user_principal),
+        ])
     
     print("\nAnalyzing required bindings...")
     modified = False
@@ -130,7 +177,7 @@ def main():
         }
     }
     
-    set_response = requests.post(set_url, headers=headers, json=payload, verify=False)
+    set_response = requests.post(set_url, headers=headers, json=payload, verify=_ssl_verify())
     if set_response.status_code == 200:
         print("  [✓] IAM policy updated successfully!")
         print("  [ℹ] Note: It may take 2-3 minutes for Google Cloud to propagate the new permissions.")

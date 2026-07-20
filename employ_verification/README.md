@@ -147,6 +147,109 @@ That's it! The agent will be deployed to Agent Engine and registered in Gemini E
 
 ---
 
+## On-Behalf-Of (OBO) User Authentication — Entra ID → Workforce Identity
+
+KPMG users sign in with **Microsoft Entra ID**, but BigQuery (and other Google
+APIs) only accept **Google** credentials. To run queries *as the logged-in user*
+(so user-level ACLs and audit logs are honored) the agent performs an
+On-Behalf-Of token exchange.
+
+### How it works
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant GE as Gemini Enterprise
+    participant Entra as Microsoft Entra ID
+    participant Agent as A2A Executor (Agent Engine)
+    participant STS as Google STS
+    participant BQ as BigQuery
+
+    User->>GE: prompt (first time)
+    GE->>Entra: OAuth2 consent (authorization resource)
+    Entra-->>GE: user token
+    GE->>Agent: A2A message + forwarded Entra token
+    Agent->>Agent: extract_user_token(context)
+    Agent->>STS: token-exchange (Entra token -> WIF)
+    STS-->>Agent: Google federated access token
+    Agent->>BQ: query AS the user (federated creds)
+    BQ-->>Agent: user-scoped rows
+    Agent-->>GE: A2UI response
+```
+
+Key pieces added to the codebase:
+
+| File | Responsibility |
+|------|----------------|
+| `agents/_base/token_exchange.py` | RFC 8693 STS call: Entra token → Workforce (WIF) access token |
+| `agents/_base/user_context.py` | Extracts the forwarded token from the A2A request; builds user `Credentials` |
+| `agents/_base/auth_middleware.py` | Optional ASGI fallback that captures the `Authorization` header (self-hosted) |
+| `agents/_base/base_executor.py` | Captures the user token per request into a `ContextVar` |
+| `tools/employee/bq_client.py` | `get_bigquery_client()` — user (OBO) creds, else ADC fallback |
+
+If **no** user token is forwarded (authorization disabled, or a machine-to-machine
+call) the tools transparently fall back to Application Default Credentials.
+
+### Requirements for OBO to actually engage
+
+1. **A Workforce Pool + OIDC provider** trusting your Entra tenant. For this
+   project the dev pool is already provisioned:
+   ```env
+   WORKFORCE_POOL_ID=azure-oidc-agentspace-dev-app
+   WORKFORCE_PROVIDER_ID=azure-dev-oidc-provider
+   WORKFORCE_POOL_LOCATION=global
+   WIF_SUBJECT_TOKEN_TYPE=jwt
+   ```
+   The provider's Entra app client ID is `49818a2b-fed8-448b-a477-47c8658ba9ea`.
+   Verify with:
+   ```bash
+   gcloud iam workforce-pools providers describe azure-dev-oidc-provider \
+     --workforce-pool=azure-oidc-agentspace-dev-app --location=global
+   ```
+2. **An Entra authorization resource** so Gemini Enterprise forwards the token.
+   `OAUTH_CLIENT_ID` **must match** the WIF provider's `oidc.clientId` above.
+   Request the custom API scope (not Microsoft Graph scopes):
+   ```env
+   OAUTH_CLIENT_ID=49818a2b-fed8-448b-a477-47c8658ba9ea
+   OAUTH_CLIENT_SECRET=<secret from Azure Portal for that app>
+   OAUTH_AUTHORIZATION_URI=https://login.microsoftonline.com/<TENANT_ID>/oauth2/v2.0/authorize
+   OAUTH_TOKEN_URI=https://login.microsoftonline.com/<TENANT_ID>/oauth2/v2.0/token
+   OAUTH_SCOPES="openid offline_access api://49818a2b-fed8-448b-a477-47c8658ba9ea/access_as_user"
+   ```
+   ```bash
+   python scripts/setup_agent_auth.py --id auth-employee-verification
+   ```
+   > `AGENT_AUTHORIZATION` **must not** be `none` — that is why every call is
+   > currently anonymous and BigQuery falls back to the service account.
+3. **IAM for the federated users** — the pool principals need BigQuery + Agent
+   access plus `roles/serviceusage.serviceUsageConsumer` (required for STS
+   `userProject` billing). Run:
+   ```bash
+   python scripts/grant_permissions.py
+   ```
+
+### One-shot setup (after `.env` is filled in)
+
+```powershell
+# Validate alignment, grant IAM, create auth resource, deploy
+.\scripts\complete_wif_setup.ps1
+```
+
+Or step-by-step:
+```bash
+python scripts/validate_wif_config.py          # pre-flight checks
+python scripts/grant_permissions.py
+python scripts/setup_agent_auth.py --id auth-employee-verification
+python scripts/deploy.py employee_verification
+python scripts/verify_wif.py <ENTRA_ACCESS_TOKEN>   # optional STS smoke test
+```
+
+Once deployed, use `python scripts/debug_agent.py employee_verification --follow`
+and watch for `BigQuery: using On-Behalf-Of user (federated) credentials` vs the
+ADC fallback line to confirm which identity ran a query.
+
+---
+
 ## Deploy CLI Reference
 
 ```bash
