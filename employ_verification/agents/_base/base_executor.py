@@ -44,8 +44,11 @@ from google.genai import types
 from agents._base.config_loader import load_agent_config
 from agents._base.user_context import (
     extract_user_token,
-    find_entra_token_in_mapping,
+    find_forwarded_token_in_mapping,
+    get_credential_mode,
+    reset_credential_mode,
     reset_user_token,
+    set_credential_mode,
     set_user_token,
 )
 
@@ -230,6 +233,11 @@ class BaseA2UIExecutor(AgentExecutor):
 
         logger.info(f"{self.__class__.__name__} executing query: {query}")
 
+        deploy_cfg = config.get("deploy", {})
+        obo_mode = deploy_cfg.get("obo_credential_mode")
+        mode_reset = set_credential_mode(obo_mode) if obo_mode else None
+        logger.info("OBO credential mode: %s", get_credential_mode())
+
         # On-Behalf-Of: capture the user token forwarded by Gemini Enterprise so
         # downstream tools can act as the logged-in user (see agents/_base/user_context).
         user_token = extract_user_token(context)
@@ -267,15 +275,21 @@ class BaseA2UIExecutor(AgentExecutor):
             # key. If request-level extraction found nothing, scan the resolved
             # session state for a Microsoft-issued JWT.
             if not user_token and session is not None:
-                session_token = find_entra_token_in_mapping(
+                session_token = find_forwarded_token_in_mapping(
                     getattr(session, "state", None)
                 )
                 if session_token:
-                    logger.info("OBO: Entra JWT found by issuer scan of ADK session state")
+                    logger.info(
+                        "OBO: forwarded token found by scan of ADK session state (mode=%s)",
+                        get_credential_mode(),
+                    )
                     user_token = session_token
 
             if user_token:
-                logger.info("OBO: forwarded user token resolved — tools will run on behalf of the user")
+                logger.info(
+                    "OBO: forwarded user token resolved (mode=%s) — tools will run on behalf of the user",
+                    get_credential_mode(),
+                )
             else:
                 logger.info("OBO: no forwarded user token — tools will fall back to ADC (service account)")
 
@@ -283,40 +297,64 @@ class BaseA2UIExecutor(AgentExecutor):
 
             content = types.Content(role="user", parts=[types.Part(text=query)])
 
-            async for event in self.runner.run_async(
+            # NOTE: runner.run_async() returns an async generator that wraps
+            # the ADK agent invocation (and its OpenTelemetry span for the
+            # root agent node). Breaking out of an `async for` loop over it
+            # early — as soon as we see the final response — leaves the
+            # generator half-consumed. Python then only calls its `aclose()`
+            # during garbage collection, which can run in a *different*
+            # asyncio task/context than the one that opened the span. That
+            # cross-context close is what produces:
+            #     WARNING: Root node <Agent> was cancelled.
+            #     ERROR:   Failed to detach context (OpenTelemetry GeneratorExit)
+            # and can race with the A2A request handler delivering the
+            # "completed" status back to the client, causing the reply to
+            # never surface even though the model already generated it.
+            #
+            # Fix: explicitly close the generator ourselves, in this same
+            # task/context, right after we're done consuming it — regardless
+            # of whether we exit via `break`, fall through, or raise.
+            run_agen = self.runner.run_async(
                 session_id=session.id,
                 user_id="user",
                 new_message=content,
-            ):
-                if hasattr(event, "is_final_response") and event.is_final_response():
-                    answer_text = ""
-                    if event.content and event.content.parts:
-                        answer_text = "\n".join(
-                            [part.text for part in event.content.parts if part.text]
-                        )
+            )
+            try:
+                async for event in run_agen:
+                    if hasattr(event, "is_final_response") and event.is_final_response():
+                        answer_text = ""
+                        if event.content and event.content.parts:
+                            answer_text = "\n".join(
+                                [part.text for part in event.content.parts if part.text]
+                            )
 
-                    if answer_text:
-                        final_parts = parse_response_to_parts(answer_text)
-                        await updater.update_status(
-                            TaskState.completed,
-                            new_agent_parts_message(
-                                final_parts,
-                                context.context_id,
-                                context.task_id,
-                            ),
-                            final=True,
-                        )
-                    else:
-                        await updater.update_status(
-                            TaskState.completed,
-                            new_agent_parts_message(
-                                [Part(root=TextPart(text="No response generated."))],
-                                context.context_id,
-                                context.task_id,
-                            ),
-                            final=True,
-                        )
-                    break
+                        if answer_text:
+                            final_parts = parse_response_to_parts(answer_text)
+                            await updater.update_status(
+                                TaskState.completed,
+                                new_agent_parts_message(
+                                    final_parts,
+                                    context.context_id,
+                                    context.task_id,
+                                ),
+                                final=True,
+                            )
+                        else:
+                            await updater.update_status(
+                                TaskState.completed,
+                                new_agent_parts_message(
+                                    [Part(root=TextPart(text="No response generated."))],
+                                    context.context_id,
+                                    context.task_id,
+                                ),
+                                final=True,
+                            )
+                        break
+            finally:
+                # Always close the generator in this context, before we
+                # return, so OpenTelemetry span/contextvar teardown happens
+                # synchronously here rather than during unpredictable GC.
+                await run_agen.aclose()
 
         except Exception as e:
             logger.error(
@@ -335,6 +373,8 @@ class BaseA2UIExecutor(AgentExecutor):
             # Always clear the per-request user token from the context.
             if token_reset is not None:
                 reset_user_token(token_reset)
+            if mode_reset is not None:
+                reset_credential_mode(mode_reset)
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue):
         raise ServerError(error=UnsupportedOperationError())

@@ -1,7 +1,7 @@
 """
 Agent Framework — Generic Deployment Script
 
-Deploys agents to Cloud Run (A2A) or Agent Engine and registers them in Gemini Enterprise.
+Deploys agents to Vertex AI Agent Engine and registers them in Gemini Enterprise.
 All agent configuration is read from YAML files in config/.
 
 Usage:
@@ -64,7 +64,7 @@ import argparse
 import importlib
 import json
 import os
-import subprocess
+import re
 import sys
 import time
 
@@ -446,7 +446,6 @@ def _unregister_agent_from_gemini_enterprise(
     if _delete_ge_agent_by_id(project_id, app_id, agent_name, ge_location):
         deleted_any = True
 
-    project_number = _get_project_number(project_id)
     auth_suffix = f"/authorizations/{auth_id}" if auth_id else None
 
     for agent in _list_ge_agents(project_id, app_id, ge_location):
@@ -472,98 +471,132 @@ def _unregister_agent_from_gemini_enterprise(
     return deleted_any
 
 
-def _get_existing_agent_authorization(
+# =============================================================================
+# Auth resource resolution (single stable ID, or blue/green rotation)
+# =============================================================================
+
+def _ensure_auth_resource(
+    *,
+    auth_id: str,
+    ge_location: str,
     project_id: str,
-    app_id: str,
-    display_name: str,
-    ge_location: str = "global",
+    project_number: str,
+    oauth_client_id: str,
+    oauth_client_secret: str,
 ) -> str | None:
-    """Find the existing agent in Gemini Enterprise and return its configured authorization resource."""
-    de_hostname = _get_de_hostname(ge_location)
-    api_endpoint = (
-        f"https://{de_hostname}/v1alpha/projects/{project_id}/"
-        f"locations/{ge_location}/collections/default_collection/engines/{app_id}/"
-        "assistants/default_assistant/agents?pageSize=200"
+    """Return the resource name for ``auth_id``, creating it if it doesn't exist."""
+    existing = _check_auth_exists(project_number, ge_location, auth_id, project_id)
+    if existing:
+        return existing.get("name")
+
+    print(f"  ⏳ Creating auth resource '{auth_id}' in {ge_location}...")
+    result_auth = _create_auth(
+        project_number=project_number,
+        ge_location=ge_location,
+        auth_id=auth_id,
+        project_id=project_id,
+        oauth_client_id=oauth_client_id,
+        oauth_client_secret=oauth_client_secret,
     )
+    if result_auth:
+        print(f"  ✓ Created auth resource: {result_auth.get('name')}")
+        return result_auth.get("name")
 
-    bearer_token = _get_bearer_token()
-    if not bearer_token:
-        return None
-
-    headers = {
-        "Authorization": f"Bearer {bearer_token}",
-        "Content-Type": "application/json",
-        "X-Goog-User-Project": project_id,
-    }
-
-    try:
-        response = requests.get(api_endpoint, headers=headers, verify=_SSL_VERIFY)
-        if response.status_code == 200:
-            agents = response.json().get("agents", [])
-            for agent in agents:
-                # Match by display name (case-insensitive partial match)
-                if display_name.lower() in agent.get("displayName", "").lower():
-                    # Check for authorizationConfig or authorization_config
-                    auth_config = agent.get("authorizationConfig") or agent.get("authorization_config") or {}
-                    # Check for toolAuthorizations, tool_authorizations, or agent_authorization
-                    auths = (
-                        auth_config.get("toolAuthorizations")
-                        or auth_config.get("tool_authorizations")
-                        or []
-                    )
-                    if auths and isinstance(auths, list):
-                        return auths[0]
-                    single_auth = auth_config.get("agent_authorization") or auth_config.get("agentAuthorization")
-                    if single_auth:
-                        return single_auth
-    except Exception as e:
-        print(f"  ⚠ Error fetching existing agent authorization: {e}")
+    print(f"  ✗ Could not create auth resource '{auth_id}'")
     return None
 
 
-# =============================================================================
-# Deploy / Undeploy a single agent
-# =============================================================================
+def _set_active_auth_slot(agent_name: str, slot: str) -> None:
+    """Persist ``deploy.active_auth_slot: <slot>`` into config/<agent_name>.yaml.
+
+    Does a targeted text replace (not a full YAML re-dump) so comments and
+    formatting elsewhere in the file are left untouched.
+    """
+    config_path = _PROJECT_ROOT / "config" / f"{agent_name}.yaml"
+    text = config_path.read_text()
+    line_re = re.compile(r"^(\s*)active_auth_slot:\s*.*$", flags=re.MULTILINE)
+    new_line = rf'\1active_auth_slot: "{slot}"'
+    if line_re.search(text):
+        text = line_re.sub(new_line, text, count=1)
+    else:
+        text = text.replace("deploy:\n", f'deploy:\n  active_auth_slot: "{slot}"\n', 1)
+    config_path.write_text(text)
+    print(f"  ✓ Recorded active auth slot '{slot}' in config/{agent_name}.yaml")
+
 
 def _resolve_agent_authorization(
     deploy_cfg: dict,
     project_id: str,
+    agent_name: str | None = None,
 ) -> str | None:
-    """Create or resolve the GE OAuth authorization resource for an agent."""
-    ge_location = os.environ.get("GE_LOCATION", "global")
-    auth_id = deploy_cfg.get("agent_authorization_id")
+    """Create or resolve the GE OAuth authorization resource for an agent.
 
+    Supports two shapes in the YAML:
+      - ``agent_authorization_id: "auth-foo"`` — single stable ID (default).
+      - ``agent_authorization_ids: ["auth-foo-blue", "auth-foo-green"]`` plus
+        ``active_auth_slot: "blue"|"green"`` — blue/green rotation. Each
+        deploy registers against the *standby* slot (the one not currently
+        active), so it's never the resource GE just detached from a deleted
+        agent — avoiding the "used by another agent" lock/delay entirely.
+        After a successful deploy, the caller flips ``active_auth_slot``.
+    """
+    ge_location = os.environ.get("GE_LOCATION", "global")
+    auth_ids = deploy_cfg.get("agent_authorization_ids")
+
+    if auth_ids:
+        if len(auth_ids) != 2:
+            print("  ✗ agent_authorization_ids must list exactly 2 slots (blue/green)")
+            return None
+
+        oauth_client_id = os.environ.get("OAUTH_CLIENT_ID")
+        oauth_client_secret = os.environ.get("OAUTH_CLIENT_SECRET")
+        project_number = _get_project_number(project_id)
+        if not (project_number and oauth_client_id and oauth_client_secret):
+            print("  ⚠ Missing OAUTH_CLIENT_ID/SECRET — skipping auth resource creation")
+            return None
+
+        active_slot = deploy_cfg.get("active_auth_slot", "blue")
+        slot_names = ["blue", "green"]
+        slot_ids = dict(zip(slot_names, auth_ids))
+        standby_slot = "green" if active_slot == "blue" else "blue"
+        standby_auth_id = slot_ids[standby_slot]
+
+        print(
+            f"  ├── Auth slots: active='{active_slot}', deploying to "
+            f"standby='{standby_slot}' ({standby_auth_id})"
+        )
+        agent_authorization = _ensure_auth_resource(
+            auth_id=standby_auth_id,
+            ge_location=ge_location,
+            project_id=project_id,
+            project_number=project_number,
+            oauth_client_id=oauth_client_id,
+            oauth_client_secret=oauth_client_secret,
+        )
+        if agent_authorization and agent_name:
+            _set_active_auth_slot(agent_name, standby_slot)
+        return agent_authorization
+
+    auth_id = deploy_cfg.get("agent_authorization_id")
     if auth_id:
         oauth_client_id = os.environ.get("OAUTH_CLIENT_ID")
         oauth_client_secret = os.environ.get("OAUTH_CLIENT_SECRET")
         project_number = _get_project_number(project_id)
 
         if project_number and oauth_client_id and oauth_client_secret:
-            existing = _check_auth_exists(
-                project_number, ge_location, auth_id, project_id
-            )
-            if existing:
-                agent_authorization = existing.get("name")
-                print(f"  ✓ Auth resource exists: {agent_authorization}")
-                return agent_authorization
-
-            print(f"  ⏳ Creating auth resource '{auth_id}' in {ge_location}...")
-            result_auth = _create_auth(
-                project_number=project_number,
-                ge_location=ge_location,
+            agent_authorization = _ensure_auth_resource(
                 auth_id=auth_id,
+                ge_location=ge_location,
                 project_id=project_id,
+                project_number=project_number,
                 oauth_client_id=oauth_client_id,
                 oauth_client_secret=oauth_client_secret,
             )
-            if result_auth:
-                agent_authorization = result_auth.get("name")
-                print(f"  ✓ Created auth resource: {agent_authorization}")
+            if agent_authorization:
                 return agent_authorization
-
             print(
                 f"  ✗ Could not create auth resource '{auth_id}' — "
-                "GE will not prompt for Entra login without it"
+                "GE will not prompt for login without it"
             )
             return None
 
@@ -651,257 +684,12 @@ def _register_agent_in_gemini_enterprise(
     return True
 
 
-def _format_cloud_run_env_vars(env: dict[str, str]) -> str:
-    """Format env vars for ``gcloud run deploy --set-env-vars``."""
-    parts = []
-    for key, value in env.items():
-        escaped = str(value).replace(",", "\\,")
-        parts.append(f"{key}={escaped}")
-    return ",".join(parts)
-
-
-def _gcloud_cmd() -> str:
-    """Return a subprocess-friendly gcloud executable (gcloud.cmd on Windows)."""
-    if os.name == "nt":
-        for candidate in (
-            os.environ.get("GCLOUD_BIN"),
-            r"C:\Program Files (x86)\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd",
-            os.path.expandvars(
-                r"%LOCALAPPDATA%\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd"
-            ),
-        ):
-            if candidate and os.path.isfile(candidate):
-                return candidate
-    return "gcloud"
-
-
-def _run_cmd(cmd: list[str], *, description: str) -> bool:
-    """Run a shell command and print output."""
-    if cmd and cmd[0] == "gcloud":
-        cmd = [_gcloud_cmd(), *cmd[1:]]
-    print(f"  ⏳ {description}...")
-    result = subprocess.run(cmd, text=True, capture_output=True)
-    if result.stdout.strip():
-        print(result.stdout.strip())
-    if result.returncode != 0:
-        print(f"  ✗ Command failed (exit {result.returncode})")
-        if result.stderr.strip():
-            print(result.stderr.strip())
-        return False
-    return True
-
-
-def _grant_ge_cloud_run_invoker(
-    project_id: str,
-    region: str,
-    service_name: str,
-) -> None:
-    """Allow Gemini Enterprise to invoke the Cloud Run A2A service."""
-    project_number = _get_project_number(project_id)
-    if not project_number:
-        print("  ⚠ Could not resolve project number — skip Cloud Run invoker grant")
-        return
-
-    member = (
-        f"serviceAccount:service-{project_number}"
-        "@gcp-sa-discoveryengine.iam.gserviceaccount.com"
-    )
-    ok = _run_cmd(
-        [
-            "gcloud",
-            "run",
-            "services",
-            "add-iam-policy-binding",
-            service_name,
-            f"--region={region}",
-            f"--project={project_id}",
-            f"--member={member}",
-            "--role=roles/run.invoker",
-            "--quiet",
-        ],
-        description="Granting Gemini Enterprise Cloud Run invoker access",
-    )
-    if ok:
-        print("  ✓ Gemini Enterprise can invoke Cloud Run service")
-
-
-def _deploy_agent_cloud_run(agent_name: str, config: dict, dry_run: bool = False) -> bool:
-    """Deploy a self-hosted A2A agent to Cloud Run and register in Gemini Enterprise."""
-    agent_cfg = config.get("agent", {})
-    deploy_cfg = config.get("deploy", {})
-    project_id = os.environ.get("PROJECT_ID")
-    display_name = agent_cfg.get("display_name", agent_name)
-    description = agent_cfg.get("description", "")
-
-    region = deploy_cfg.get(
-        "cloud_run_region",
-        deploy_cfg.get("region", os.environ.get("LOCATION", "us-central1")),
-    )
-    service_name = deploy_cfg.get(
-        "cloud_run_service_name",
-        agent_name.replace("_", "-"),
-    )
-    rpc_path = deploy_cfg.get("a2a_rpc_path", "/a2a/v1")
-    image_tag = deploy_cfg.get("image_tag", "latest")
-    image_uri = (
-        f"{region}-docker.pkg.dev/{project_id}/cloud-run-source-deploy/"
-        f"{service_name}:{image_tag}"
-    )
-
-    print(f"  ├── Target: Cloud Run A2A (not Agent Engine)")
-    print(f"  ├── Service: {service_name}")
-    print(f"  ├── Region: {region}")
-    print(f"  ├── Display Name: {display_name}")
-
-    if dry_run:
-        print(f"  └── 🔍 DRY RUN — nothing deployed")
-        return True
-
-    # Predict service URL before first deploy (matches Cloud Run naming).
-    project_number = _get_project_number(project_id)
-    app_url = deploy_cfg.get("cloud_run_url")
-    if not app_url and project_number:
-        app_url = f"https://{service_name}-{project_number}.{region}.run.app"
-
-    env_vars = dict(deploy_cfg.get("env_vars", {}))
-    env_vars["AGENT_CONFIG_NAME"] = agent_name
-    env_vars["PROJECT_ID"] = project_id
-    env_vars["GOOGLE_CLOUD_PROJECT"] = project_id
-    env_vars["GOOGLE_GENAI_USE_VERTEXAI"] = os.environ.get(
-        "GOOGLE_GENAI_USE_VERTEXAI", "true"
-    )
-    if app_url:
-        env_vars["APP_URL"] = app_url
-    env_vars["A2A_RPC_PATH"] = rpc_path
-    model = agent_cfg.get("model", os.environ.get("GOOGLE_GENAI_MODEL"))
-    if model:
-        env_vars["GOOGLE_GENAI_MODEL"] = model
-
-    for _obo_key in (
-        "WORKFORCE_POOL_ID",
-        "WORKFORCE_PROVIDER_ID",
-        "WORKFORCE_POOL_LOCATION",
-        "WIF_SUBJECT_TOKEN_TYPE",
-        "WIF_SCOPE",
-        "SSL_VERIFY",
-    ):
-        _obo_val = os.environ.get(_obo_key)
-        if _obo_val:
-            env_vars[_obo_key] = _obo_val
-
-    dockerfile = _PROJECT_ROOT / "Dockerfile"
-    if not _run_cmd(
-        [
-            "gcloud",
-            "builds",
-            "submit",
-            str(_REPO_ROOT),
-            f"--project={project_id}",
-            f"--tag={image_uri}",
-            f"--file={dockerfile}",
-        ],
-        description=f"Building container {image_uri}",
-    ):
-        return False
-
-    if not _run_cmd(
-        [
-            "gcloud",
-            "run",
-            "deploy",
-            service_name,
-            f"--project={project_id}",
-            f"--region={region}",
-            f"--image={image_uri}",
-            "--port=8080",
-            f"--set-env-vars={_format_cloud_run_env_vars(env_vars)}",
-            "--session-affinity",
-            "--quiet",
-        ],
-        description=f"Deploying Cloud Run service {service_name}",
-    ):
-        return False
-
-    describe = subprocess.run(
-        [
-            _gcloud_cmd(),
-            "run",
-            "services",
-            "describe",
-            service_name,
-            f"--project={project_id}",
-            f"--region={region}",
-            "--format=value(status.url)",
-        ],
-        text=True,
-        capture_output=True,
-    )
-    if describe.returncode != 0:
-        print(f"  ✗ Could not resolve Cloud Run URL: {describe.stderr.strip()}")
-        return False
-
-    service_url = describe.stdout.strip()
-    print(f"  ✓ Cloud Run URL: {service_url}")
-
-    if service_url and service_url != app_url:
-        env_vars["APP_URL"] = service_url
-        if not _run_cmd(
-            [
-                "gcloud",
-                "run",
-                "services",
-                "update",
-                service_name,
-                f"--project={project_id}",
-                f"--region={region}",
-                f"--set-env-vars={_format_cloud_run_env_vars(env_vars)}",
-                "--quiet",
-            ],
-            description="Updating APP_URL on Cloud Run service",
-        ):
-            return False
-
-    _grant_ge_cloud_run_invoker(project_id, region, service_name)
-
-    card_url = f"{service_url}{rpc_path}/.well-known/agent-card.json"
-    bearer_token = _get_bearer_token()
-    if not bearer_token:
-        print("  ✗ Could not get bearer token for agent card fetch")
-        return False
-
-    httpx_verify = False if _SSL_VERIFY is False else True
-    try:
-        response = httpx.get(
-            card_url,
-            headers={"Authorization": f"Bearer {bearer_token}"},
-            timeout=60,
-            verify=httpx_verify,
-        )
-        response.raise_for_status()
-        a2ui_agent_card_json = response.json()
-    except Exception as e:
-        print(f"  ✗ Could not fetch A2A agent card from {card_url}: {e}")
-        return False
-
-    print(f"  ✓ Fetched agent card from Cloud Run")
-    a2ui_agent_card_str = json.dumps(a2ui_agent_card_json)
-    agent_authorization = _resolve_agent_authorization(deploy_cfg, project_id)
-
-    return _register_agent_in_gemini_enterprise(
-        agent_name=agent_name,
-        config=config,
-        a2ui_agent_card_str=a2ui_agent_card_str,
-        agent_authorization=agent_authorization,
-        reasoning_engine=None,
-    )
-
+# =============================================================================
+# Deploy / Undeploy a single agent (Vertex AI Agent Engine only)
+# =============================================================================
 
 def deploy_agent(agent_name: str, dry_run: bool = False) -> bool:
-    """Deploy a single agent and register it in Gemini Enterprise.
-
-    Uses ``deploy.deployment_target`` from the agent YAML:
-      - ``cloud_run`` — self-hosted A2A on Cloud Run (recommended for OBO/WIF)
-      - ``agent_engine`` — Vertex AI Reasoning Engine (legacy default)
+    """Deploy a single agent to Vertex AI Agent Engine and register it in GE.
 
     Args:
         agent_name: Name matching config/<agent_name>.yaml
@@ -910,24 +698,11 @@ def deploy_agent(agent_name: str, dry_run: bool = False) -> bool:
     Returns:
         True if successful, False otherwise.
     """
-    # Load config
     try:
         config = load_agent_config(agent_name)
     except FileNotFoundError as e:
         print(f"  ✗ {e}")
         return False
-
-    deploy_cfg = config.get("deploy", {})
-    deployment_target = deploy_cfg.get("deployment_target", "agent_engine")
-    if deployment_target == "cloud_run":
-        agent_cfg = config.get("agent", {})
-        model = agent_cfg.get("model", os.environ.get("GOOGLE_GENAI_MODEL", "gemini-2.5-flash"))
-        tool_paths = agent_cfg.get("tools", [])
-        skills_cfg = deploy_cfg.get("skills", [])
-        print(f"  ├── Model: {model}")
-        print(f"  ├── Tools: {len(tool_paths)} tools")
-        print(f"  ├── Skills: {len(skills_cfg)} skills defined")
-        return _deploy_agent_cloud_run(agent_name, config, dry_run=dry_run)
 
     return _deploy_agent_engine(agent_name, config, dry_run=dry_run)
 
@@ -947,7 +722,6 @@ def _deploy_agent_engine(agent_name: str, config: dict, dry_run: bool = False) -
     project_id = os.environ.get("PROJECT_ID")
     location = deploy_cfg.get("region", os.environ.get("LOCATION", "us-central1"))
     storage = os.environ.get("STORAGE_BUCKET")
-    app_id = os.environ.get("GEMINI_ENTERPRISE_APP_ID")
     api_endpoint = f"{location}-aiplatform.googleapis.com"
     api_version = deploy_cfg.get("api_version", "v1beta1")
 
@@ -1044,12 +818,10 @@ def _deploy_agent_engine(agent_name: str, config: dict, dry_run: bool = False) -
     extra_reqs = deploy_cfg.get("extra_requirements", [])
     all_requirements = base_reqs + extra_reqs
 
-    # Build extra packages (resolve repo-root widgets path)
+    # Build extra packages (resolve repo-root widgets path when needed).
     extra_packages = []
     for pkg in deploy_cfg.get("extra_packages", []):
-        if pkg == "widgets":
-            extra_packages.append(str(_REPO_ROOT / "widgets"))
-        elif pkg == "../widgets":
+        if pkg in ("widgets", "../widgets"):
             extra_packages.append(str(_REPO_ROOT / "widgets"))
         else:
             extra_packages.append(pkg)
@@ -1066,6 +838,7 @@ def _deploy_agent_engine(agent_name: str, config: dict, dry_run: bool = False) -
         "WORKFORCE_POOL_LOCATION",
         "WIF_SUBJECT_TOKEN_TYPE",
         "WIF_SCOPE",
+        "OBO_CREDENTIAL_MODE",
         "GOOGLE_GENAI_USE_VERTEXAI",
         "SSL_VERIFY",
     ):
@@ -1100,7 +873,7 @@ def _deploy_agent_engine(agent_name: str, config: dict, dry_run: bool = False) -
     remote_engine_resource = remote_agent.api_resource.name
     print(f"  ✓ Deployed: {remote_engine_resource} ({elapsed:.0f}s)")
 
-    agent_authorization = _resolve_agent_authorization(deploy_cfg, project_id)
+    agent_authorization = _resolve_agent_authorization(deploy_cfg, project_id, agent_name)
     return _register_deployed_agent_in_ge(
         agent_name=agent_name,
         config=config,
@@ -1118,7 +891,6 @@ def _register_deployed_agent_in_ge(
 ) -> bool:
     """Fetch the A2A card from a deployed Reasoning Engine and register in GE."""
     deploy_cfg = config.get("deploy", {})
-    project_id = os.environ.get("PROJECT_ID")
     location = deploy_cfg.get("region", os.environ.get("LOCATION", "us-central1"))
     api_endpoint = f"{location}-aiplatform.googleapis.com"
     api_version = deploy_cfg.get("api_version", "v1beta1")
@@ -1194,7 +966,7 @@ def register_agent_in_ge(agent_name: str, reasoning_engine: str | None = None) -
     print(f"  ├── GE registration: {deploy_cfg.get('ge_registration', 'adk')}")
 
     project_id = os.environ.get("PROJECT_ID")
-    agent_authorization = _resolve_agent_authorization(deploy_cfg, project_id)
+    agent_authorization = _resolve_agent_authorization(deploy_cfg, project_id, agent_name)
     return _register_deployed_agent_in_ge(
         agent_name=agent_name,
         config=config,
@@ -1344,7 +1116,6 @@ Examples:
     # Header
     project_id = os.environ.get("PROJECT_ID", "?")
     location = os.environ.get("LOCATION", "us-central1")
-    ge_location = os.environ.get("GE_LOCATION", "global")
     action = (
         "Undeploy"
         if args.undeploy
@@ -1357,12 +1128,6 @@ Examples:
     print(f"  Project: {project_id} | Region: {location}")
     print("=" * 80)
     print()
-
-    # -------------------------------------------------------------------------
-    # Step 0: Resolve project number (needed for per-agent auth resource creation)
-    # -------------------------------------------------------------------------
-    _project_number = None
-    # Skipped resolving project number since auth resource creation and registration are disabled.
 
     # Process each agent
     results = {}

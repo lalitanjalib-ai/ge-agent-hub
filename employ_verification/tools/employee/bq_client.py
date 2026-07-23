@@ -61,7 +61,12 @@ def get_bigquery_client() -> bigquery.Client:
         user_credentials = None
 
     if user_credentials is not None:
-        logger.info("BigQuery: using On-Behalf-Of user (federated) credentials")
+        from agents._base.user_context import get_credential_mode, OBO_MODE_GOOGLE_DIRECT
+
+        if get_credential_mode() == OBO_MODE_GOOGLE_DIRECT:
+            logger.info("BigQuery: using forwarded Google OAuth token (direct OBO, no STS)")
+        else:
+            logger.info("BigQuery: using On-Behalf-Of user (federated) credentials")
         return bigquery.Client(project=PROJECT_ID, credentials=user_credentials)
 
     if had_user_token:
