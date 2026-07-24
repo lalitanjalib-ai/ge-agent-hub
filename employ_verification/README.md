@@ -2,7 +2,7 @@
 
 A config-driven multi-agent platform for deploying **A2UI**, **A2A**, and **Google ADK** agents to **Gemini Enterprise** via **Agent Engine**.
 
-## Flagship Deployment: emp_verify_google_oauth_v3
+## Flagship Agent: emp_verify_google_oauth_v3
 
 The **Employee Verification Google OAuth v3** agent (`emp_verify_google_oauth_v3`) is the current, actively
 deployed agent in this repo. It demonstrates the production pattern for GE-hosted agents with **direct Google
@@ -17,6 +17,11 @@ OAuth On-Behalf-Of** — no Entra, no STS, no Workforce Identity Federation.
 - **A2UI catalog**: Uses `BasicCatalog` (not the repo-root `widgets/` package) because the KPMG widgets
   package is not available on Agent Engine's runtime.
 - **Gallery name**: Search for **Employee Verification Google OAuth v3** in the GE Agent Gallery.
+
+> **Note:** This repo previously included alternate agents (`emp_verify_v2` using Entra ID → Workforce
+> Identity Federation, and an original `employee_verification` v1 reference implementation). Documentation
+> for the legacy Entra/WIF path has moved to [`agents/emp_verify_v2/README.md`](agents/emp_verify_v2/README.md).
+> This README covers `emp_verify_google_oauth_v3` only.
 
 ### Prerequisites (.env)
 
@@ -48,17 +53,27 @@ python scripts/deploy.py emp_verify_google_oauth_v3
 
 This single command reads `config/emp_verify_google_oauth_v3.yaml`'s `deploy:` block and:
 
-1. Deploys the ADK agent (wrapped as an `A2aAgent`) to Vertex AI Agent Engine.
-2. Creates or reuses a GE OAuth authorization resource via **blue/green rotation** — each deploy registers
-   against the standby slot (`auth-emp-verify-google-oauth-v3-blue` / `auth-emp-verify-google-oauth-v3-green`)
-   so the resource is never locked by a just-deleted prior registration. `deploy.py` flips
-   `active_auth_slot` in the YAML after a successful deploy.
-3. Unregisters any stale prior GE registration and re-registers as `a2aAgentDefinition`.
-4. Sets gallery visibility to `ALL_USERS` so the agent appears in the GE Agent Gallery for all users.
+1. **First-time deploy** (no `deploy.reasoning_engine` recorded yet, or that engine no longer exists):
+   creates a brand-new Agent Engine (Reasoning Engine) resource, then automatically writes the new
+   resource name back into the YAML.
+2. **Redeploy** (an existing `deploy.reasoning_engine` is still valid): updates that **same** Reasoning
+   Engine resource in place via `agent_engines.update()` — the resource name and A2A URL never change.
+3. Creates the GE OAuth authorization resource (`deploy.agent_authorization_id`) if it doesn't already
+   exist — this only ever happens once, on first deploy.
+4. Registers (or PATCHes in place) the GE agent as `a2aAgentDefinition`. Because the underlying engine
+   resource name doesn't change between deploys, the authorization is **never detached or reattached**
+   on a normal redeploy — there's no "used by another agent" lock to wait out.
+5. Sets gallery visibility to `ALL_USERS` so the agent appears in the GE Agent Gallery for all users.
 
 No manual `setup_agent_auth.py` step is required for normal v3 deploys — auth resources are managed by
-`deploy.py`. Use `setup_agent_auth.py --force` only if you need to recreate a locked auth resource outside
-the blue/green flow.
+`deploy.py`.
+
+If you deliberately need a brand-new Reasoning Engine (e.g. a change `update()` can't apply, like
+`agent_framework`), use `--force-recreate-engine`. This deletes the current engine, waits 5 minutes for
+eventual-consistency safety, then creates a new one and re-registers — the GE authorization resource
+itself is untouched throughout (it's still attached to the same GE agent record, just pointed at a new
+A2A URL).
+
 
 ### Re-registering an already-deployed engine (no redeploy)
 
@@ -88,25 +103,6 @@ python scripts/deploy.py emp_verify_google_oauth_v3 --dry-run
 
 ---
 
-## Alternative: emp_verify_v2 (Entra → WIF OBO)
-
-`emp_verify_v2` uses **Microsoft Entra ID → Google STS → Workforce Identity Federation** for OBO. It
-remains in the repo for environments that require Entra sign-in. See [Entra/WIF OBO](#on-behalf-of-obo-user-authentication--entra-id--workforce-identity-emp_verify_v2) below.
-
-```bash
-python scripts/deploy.py emp_verify_v2
-```
-
-If GE reports the authorization resource as `"used by another agent"` after redeploy, `deploy.py` retries
-automatically. If still locked:
-
-```bash
-python scripts/setup_agent_auth.py --id auth-emp-verify-v2 --force
-python scripts/deploy.py emp_verify_v2 --register-only --reasoning-engine <RESOURCE_ID>
-```
-
----
-
 ## Architecture
 
 ```
@@ -127,30 +123,24 @@ dn-innov-a2ui/
     │
     ├── config/                           # Agent configurations (YAML)
     │   ├── _defaults.yaml                # Shared defaults (model, region, etc.)
-    │   ├── emp_verify_google_oauth_v3.yaml  # Flagship — Agent Engine + A2A + Google OAuth OBO
-    │   ├── emp_verify_v2.yaml            # Entra → WIF OBO variant
-    │   └── employee_verification.yaml    # Original v1 agent config
+    │   └── emp_verify_google_oauth_v3.yaml  # Flagship — Agent Engine + A2A + Google OAuth OBO
     │
     ├── agents/                           # Agent definitions (one folder per agent)
     │   ├── _base/                        # Shared base classes
     │   │   ├── config_loader.py          # YAML config loader + merger
     │   │   ├── base_executor.py          # Generic A2A/A2UI executor (captures OBO token per request)
     │   │   ├── agent_card.py             # A2A agent card builder with A2UI extension metadata
-    │   │   ├── token_exchange.py         # RFC 8693 STS call (Entra → WIF; used by emp_verify_v2)
     │   │   └── user_context.py           # Extracts forwarded token; builds user Credentials
     │   │
     │   ├── emp_verify_google_oauth_v3/   # Employee Verification v3 (flagship, Google OAuth OBO)
     │   │   ├── agent.py                  # ADK Agent — BasicCatalog for Agent Engine
     │   │   └── executor.py               # Thin executor subclass
     │   │
-    │   ├── emp_verify_v2/                # Employee Verification v2 (Entra → WIF OBO)
-    │   │   ├── agent.py
-    │   │   └── executor.py
+    │   ├── employee_verification/        # Shared A2UI examples (used by v3's config)
+    │   │   └── examples/0.8/             # A2UI JSON examples referenced by emp_verify_google_oauth_v3.yaml
     │   │
-    │   └── employee_verification/        # Employee Verification v1 (reference implementation)
-    │       ├── agent.py
-    │       ├── executor.py
-    │       └── examples/0.8/             # A2UI JSON examples (shared with v2/v3)
+    │   └── emp_verify_v2/                # Legacy agent (Entra → WIF OBO) — see its own README
+    │       └── README.md                 # Legacy Entra/WIF documentation
     │
     ├── tools/                            # Shared tool library
     │   ├── registry.py                   # Tool metadata catalog
@@ -161,19 +151,21 @@ dn-innov-a2ui/
     │       └── verify_employee.py
     │
     ├── scripts/                          # Deploy + lifecycle + diagnostics
-    │   ├── deploy.py                     # Generic deploy CLI (Agent Engine; blue/green auth rotation)
+    │   ├── deploy.py                     # Generic deploy CLI (Agent Engine create/update-in-place; stable auth resource)
+
     │   ├── undeploy.py                   # Tear down agents
-    │   ├── setup_agent_auth.py           # Create/recreate GE OAuth authorization resource
     │   ├── grant_permissions.py          # IAM grants for OBO identities + service account
-    │   ├── validate_wif_config.py        # Pre-flight .env alignment checks (Entra/WIF path)
-    │   ├── verify_wif.py                 # Entra → STS → BigQuery validation (emp_verify_v2)
     │   ├── verify_google_oauth.py        # Google access token → BigQuery validation (v3)
-    │   ├── get_entra_token.py            # MSAL device-code flow (Entra/WIF testing)
     │   ├── debug_agent.py                # Consolidated logs/traces/diagnostics tool
     │   └── get_agent_card.py             # Fetch A2A agent card from a deployed Reasoning Engine
     │
     └── data/                             # Mock data, schemas, etc.
 ```
+
+> Legacy scripts (`setup_agent_auth.py`, `verify_wif.py`, `get_entra_token.py`, `validate_wif_config.py`,
+> `complete_wif_setup.ps1`, `setup_bigquery.py`) and the Entra→STS token-exchange module
+> (`agents/_base/token_exchange.py`) still exist in the repo for the `emp_verify_v2` path. See
+> [`agents/emp_verify_v2/README.md`](agents/emp_verify_v2/README.md) for details.
 
 ---
 
@@ -212,7 +204,7 @@ Edit `.env` and fill in the shared variables:
 | `GE_LOCATION` | GE app region: `global`, `us`, or `eu` (regional apps, e.g. `us`, cannot use `global` auth resources) |
 | `SSL_VERIFY` | Set to `false` on Windows corporate machines with custom CAs |
 
-**For `emp_verify_google_oauth_v3` (recommended)** — use a GCP OAuth 2.0 Web client:
+Use a **GCP OAuth 2.0 Web client** for `emp_verify_google_oauth_v3`:
 
 | Variable | Value |
 |---|---|
@@ -221,9 +213,6 @@ Edit `.env` and fill in the shared variables:
 | `OAUTH_TOKEN_URI` | `https://oauth2.googleapis.com/token` |
 | `OAUTH_SCOPES` | `https://www.googleapis.com/auth/bigquery https://www.googleapis.com/auth/cloud-platform openid email profile` |
 | `OBO_CREDENTIAL_MODE` | `google_direct` |
-
-**For `emp_verify_v2` (Entra → WIF)** — use an Entra OAuth client and WIF pool settings instead; see
-[Entra/WIF OBO](#on-behalf-of-obo-user-authentication--entra-id--workforce-identity-emp_verify_v2).
 
 > **Finding your GE App ID:** GCP Console → Vertex AI → Agent Builder → your app → copy the ID from the URL
 
@@ -245,21 +234,17 @@ python adhoc/setup_employee_bq.py
 ```bash
 python scripts/grant_permissions.py
 ```
-This grants least-privilege BigQuery access to the Reasoning Engine service account (ADC fallback) and,
-for the Entra/WIF path, to Workforce Identity pool principals. For **Google OAuth v3**, ensure end users
-have BigQuery access on the dataset under their Google / Cloud Identity account.
+This grants least-privilege BigQuery access to the Reasoning Engine service account (ADC fallback). Ensure
+end users have BigQuery access on the dataset under their Google / Cloud Identity account for OBO queries
+to run as the user.
 
 ### Step 6 — Set up OAuth authorization resource
 
-**v3 (`emp_verify_google_oauth_v3`)**: skip this step — `deploy.py` creates auth resources automatically
-via blue/green rotation (`auth-emp-verify-google-oauth-v3-blue` / `-green`).
+Skip this step — `deploy.py` creates the single stable auth resource (`agent_authorization_id` in the
+YAML) automatically on first deploy, and reuses it on every redeploy.
 
-**v2 (`emp_verify_v2`)**:
-```bash
-python scripts/setup_agent_auth.py --id auth-emp-verify-v2
-```
 
-> **OAuth client redirect URIs** (both v3 and v2):
+> **OAuth client redirect URIs**:
 > - `https://vertexaisearch.cloud.google.com/oauth-redirect`
 > - `https://vertexaisearch.cloud.google.com/static/oauth/oauth.html`
 
@@ -273,7 +258,7 @@ appears in the Agent Gallery as **Employee Verification Google OAuth v3**.
 
 ---
 
-## On-Behalf-Of (OBO) — Google OAuth direct (emp_verify_google_oauth_v3)
+## On-Behalf-Of (OBO) — Google OAuth direct
 
 The v3 agent skips Entra and Workforce Identity entirely. Users sign in with **Google** in Gemini
 Enterprise; GE forwards a **Google OAuth access token** to the agent, and BigQuery runs as that user.
@@ -305,25 +290,34 @@ sequenceDiagram
 | `agents/_base/user_context.py` | `OBO_CREDENTIAL_MODE=google_direct` — wraps forwarded Google token in `Credentials` |
 | `agents/_base/base_executor.py` | Sets `obo_credential_mode` from YAML per request; captures token into `ContextVar` |
 | `tools/employee/bq_client.py` | `get_bigquery_client()` — user (OBO) creds, else ADC fallback |
-| `config/emp_verify_google_oauth_v3.yaml` | `obo_credential_mode: google_direct`, blue/green auth IDs, `ge_access_policy` |
+| `config/emp_verify_google_oauth_v3.yaml` | `obo_credential_mode: google_direct`, `agent_authorization_id`, `reasoning_engine`, `ge_access_policy` |
 
 If **no** user token is forwarded, tools transparently fall back to Application Default Credentials (the
 Reasoning Engine service account).
 
-### Blue/green auth resource rotation
+### Auth resource lifecycle (single stable ID, no rotation)
 
-`config/emp_verify_google_oauth_v3.yaml` defines two authorization IDs and an `active_auth_slot`:
+`config/emp_verify_google_oauth_v3.yaml` defines one stable authorization ID and tracks the current
+Reasoning Engine resource:
 
 ```yaml
-agent_authorization_ids:
-  - "auth-emp-verify-google-oauth-v3-blue"
-  - "auth-emp-verify-google-oauth-v3-green"
-active_auth_slot: "green"
+agent_authorization_id: "auth-emp-verify-google-oauth-v3"
+reasoning_engine: projects/.../locations/us-central1/reasoningEngines/1246408030514315264
 ```
 
-Each deploy registers against the **standby** slot (the one not currently active), avoiding GE's
-`"used by another agent"` lock when swapping engines. `deploy.py` flips `active_auth_slot` after a
-successful deploy — do not edit it by hand unless recovering from a failed deploy.
+- **First deploy**: `deploy.py` creates the auth resource once, creates the Reasoning Engine, and writes
+  its resource name back into `reasoning_engine` automatically.
+- **Every redeploy**: the same Reasoning Engine resource is updated in place (`agent_engines.update()`),
+  so its name/A2A URL never changes — the GE agent registration is simply PATCHed, and the authorization
+  is **never detached or reattached**. This is what avoids GE's `"used by another agent"` lock entirely
+  during normal redeploys (GE can take several minutes to release a freed authorization, so avoiding the
+  detach/reattach cycle matters).
+- **`--force-recreate-engine`**: only needed for the rare case you must destroy and recreate the
+  Reasoning Engine itself (e.g. certain runtime/framework changes). `deploy.py` waits 5 minutes after
+  deleting the old engine before creating the new one and re-registering, as a safety margin — even
+  though the authorization resource itself is untouched in this path (it stays attached to the same GE
+  agent record; only the record's target A2A URL changes).
+
 
 ### Validating Google OAuth OBO (outside GE)
 
@@ -336,118 +330,11 @@ Once deployed, use `python scripts/debug_agent.py emp_verify_google_oauth_v3 --f
 
 ---
 
-## On-Behalf-Of (OBO) User Authentication — Entra ID → Workforce Identity (emp_verify_v2)
-
-KPMG users sign in with **Microsoft Entra ID**, but BigQuery (and other Google
-APIs) only accept **Google** credentials. To run queries *as the logged-in user*
-(so user-level ACLs and audit logs are honored) the agent performs an
-On-Behalf-Of token exchange.
-
-### How it works
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant GE as Gemini Enterprise
-    participant Entra as Microsoft Entra ID
-    participant Agent as A2A Executor (Agent Engine)
-    participant STS as Google STS
-    participant BQ as BigQuery
-
-    User->>GE: prompt (first time)
-    GE->>Entra: OAuth2 consent (authorization resource)
-    Entra-->>GE: user token
-    GE->>Agent: A2A message + forwarded Entra token
-    Agent->>Agent: extract_user_token(context)
-    Agent->>STS: token-exchange (Entra token -> WIF)
-    STS-->>Agent: Google federated access token
-    Agent->>BQ: query AS the user (federated creds)
-    BQ-->>Agent: user-scoped rows
-    Agent-->>GE: A2UI response
-```
-
-### Two distinct Entra apps — do not confuse them
-
-| App | Role |
-|---|---|
-| **GE OAuth Client** (`OAUTH_CLIENT_ID` in `.env`) | Drives the login prompt GE shows the user. Used only on the GE authorization resource (`serverSideOauth2`). |
-| **WIF API App** (`WIF_PROVIDER_OIDC_CLIENT_ID`) | The audience the Workforce Identity Pool provider expects on the forwarded Entra access token. This is what Google STS validates against. |
-
-These are separate Entra App Registrations. The GE OAuth client must request a scope
-(`api://<WIF_APP_ID>/<scope-name>`) against the WIF API app so the token GE forwards has the right audience
-for the STS exchange.
-
-### Key files
-
-| File | Responsibility |
-|------|----------------|
-| `agents/_base/token_exchange.py` | RFC 8693 STS call: Entra token → Workforce (WIF) access token |
-| `agents/_base/user_context.py` | Extracts the forwarded token from the A2A request; builds user `Credentials` |
-| `agents/_base/base_executor.py` | Captures the user token per request into a `ContextVar` |
-| `tools/employee/bq_client.py` | `get_bigquery_client()` — user (OBO) creds, else ADC fallback |
-
-If **no** user token is forwarded (authorization disabled, or a machine-to-machine
-call) the tools transparently fall back to Application Default Credentials.
-
-### Requirements for OBO to actually engage
-
-1. **A Workforce Pool + OIDC provider** trusting your Entra tenant:
-   ```env
-   WORKFORCE_POOL_ID=azure-oidc-agentspace-dev-app
-   WORKFORCE_PROVIDER_ID=azure-dev-oidc-provider
-   WORKFORCE_POOL_LOCATION=global
-   WIF_SUBJECT_TOKEN_TYPE=jwt
-   ```
-   Verify with:
-   ```bash
-   gcloud iam workforce-pools providers describe azure-dev-oidc-provider \
-     --workforce-pool=azure-oidc-agentspace-dev-app --location=global
-   ```
-2. **An Entra authorization resource** so Gemini Enterprise forwards the token, requesting the WIF API
-   app's custom scope (not Microsoft Graph scopes):
-   ```env
-   OAUTH_CLIENT_ID=<GE OAuth client ID>
-   OAUTH_CLIENT_SECRET=<secret from Azure Portal for that app>
-   OAUTH_AUTHORIZATION_URI=https://login.microsoftonline.com/<TENANT_ID>/oauth2/v2.0/authorize
-   OAUTH_TOKEN_URI=https://login.microsoftonline.com/<TENANT_ID>/oauth2/v2.0/token
-   OAUTH_SCOPES="openid offline_access api://<WIF_APP_ID>/<scope-name>"
-   ```
-   ```bash
-   python scripts/setup_agent_auth.py --id auth-emp-verify-v2
-   ```
-3. **IAM for the federated users** — the pool principals need BigQuery + Agent access plus
-   `roles/serviceusage.serviceUsageConsumer` (required for STS `userProject` billing):
-   ```bash
-   python scripts/grant_permissions.py
-   ```
-
-### Validating OBO end-to-end (outside of GE)
-
-```bash
-python scripts/get_entra_token.py        # MSAL device-code login, prints an Entra token
-python scripts/verify_wif.py <ENTRA_ACCESS_TOKEN>   # Entra -> STS -> BigQuery smoke test
-```
-
-`verify_wif.py` exercises the agent's own `token_exchange.py` code path, so what you validate there is
-exactly what runs in production.
-
-Once deployed, use `python scripts/debug_agent.py emp_verify_v2 --follow` and watch for
-`BigQuery: using On-Behalf-Of user (federated) credentials` vs the ADC fallback line to confirm which
-identity ran a query.
-
-**Note on `.entra_token.tmp`**: `get_entra_token.py` writes the fetched token to this file for convenience
-during manual testing. It is gitignored — never commit it, it is a live credential.
-
----
-
 ## Deploy CLI Reference
 
 ```bash
-# Deploy a SINGLE agent
+# Deploy the agent
 python scripts/deploy.py emp_verify_google_oauth_v3
-
-# Deploy MULTIPLE specific agents
-python scripts/deploy.py emp_verify_google_oauth_v3 emp_verify_v2
 
 # Deploy ALL agents (reads every YAML in config/)
 python scripts/deploy.py --all
@@ -467,7 +354,7 @@ python scripts/deploy.py emp_verify_google_oauth_v3 --undeploy
 
 ### Undeploy Script
 ```bash
-# Undeploy a single agent
+# Undeploy the agent
 python scripts/undeploy.py emp_verify_google_oauth_v3
 
 # Undeploy all agents
@@ -575,12 +462,12 @@ all_tools = list_all_tools()
 |--------|-------------|
 | **Hosting** | Vertex AI Agent Engine (Reasoning Engine) — KPMG standard for GE agents |
 | **GE registration** | Pure A2A (`a2aAgentDefinition`) — required for A2UI DataParts in GE |
-| **OBO (v3)** | Google OAuth direct — GE forwards Google access token; `OBO_CREDENTIAL_MODE=google_direct` |
-| **OBO (v2)** | Entra ID → Google STS → Workforce Identity Federation, per-request via `ContextVar` |
-| **Auth resources (v3)** | Blue/green rotation in YAML — `deploy.py` alternates two authorization IDs per deploy |
+| **OBO** | Google OAuth direct — GE forwards Google access token; `OBO_CREDENTIAL_MODE=google_direct` |
+| **Auth resources** | Single stable ID in YAML — created once on first deploy, never rotated/detached |
 | **Config** | YAML files in `config/`, merged with `_defaults.yaml` |
+
 | **Tools vs Skills** | Tools = Python functions the LLM calls. Skills = metadata for A2A routing |
 | **Executor** | Base class in `agents/_base/base_executor.py`, agents subclass with 3 lines |
 | **Deploy** | Generic `scripts/deploy.py` reads config, imports executor dynamically |
-| **A2UI** | Examples in `agents/employee_verification/examples/0.8/`; v3 uses `BasicCatalog` on Agent Engine |
+| **A2UI** | Examples in `agents/employee_verification/examples/0.8/`; uses `BasicCatalog` on Agent Engine |
 | **KPMG Widgets** | Repo-root `widgets/` — local/dev only; not bundled for Agent Engine deploys |

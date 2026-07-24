@@ -48,7 +48,13 @@ _STRICT_OBO = os.environ.get("STRICT_OBO", "").strip().lower() in ("true", "1", 
 
 def get_bigquery_client() -> bigquery.Client:
     """Return a BigQuery client for the current user (OBO) or ADC fallback."""
-    from agents._base.user_context import get_user_token, get_user_gcp_credentials
+    from agents._base.user_context import (
+        OBO_MODE_GOOGLE_DIRECT,
+        get_credential_mode,
+        get_user_gcp_credentials,
+        get_user_token,
+        log_obo_principal,
+    )
 
     had_user_token = bool(get_user_token())
 
@@ -60,9 +66,10 @@ def get_bigquery_client() -> bigquery.Client:
         logger.error("OBO: error resolving user credentials, using ADC: %s", exc)
         user_credentials = None
 
-    if user_credentials is not None:
-        from agents._base.user_context import get_credential_mode, OBO_MODE_GOOGLE_DIRECT
+    if had_user_token and get_credential_mode() == OBO_MODE_GOOGLE_DIRECT:
+        log_obo_principal(get_user_token())
 
+    if user_credentials is not None:
         if get_credential_mode() == OBO_MODE_GOOGLE_DIRECT:
             logger.info("BigQuery: using forwarded Google OAuth token (direct OBO, no STS)")
         else:

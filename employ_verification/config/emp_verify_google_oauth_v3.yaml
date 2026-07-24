@@ -17,9 +17,10 @@
 #     https://vertexaisearch.cloud.google.com/oauth-redirect
 #     https://vertexaisearch.cloud.google.com/static/oauth/oauth.html
 #
-# Auth resources are created automatically by deploy.py (blue/green rotation,
-# see deploy.agent_authorization_ids below) — no manual setup_agent_auth.py
-# step required for this agent.
+# The auth resource is created automatically by deploy.py on first deploy
+# (see deploy.agent_authorization_id below) — no manual setup_agent_auth.py
+# step required for this agent. On redeploys, deploy.py PATCHes the existing
+# GE agent registration in place, so the authorization is never detached.
 #
 # Deploy:
 #   python scripts/deploy.py emp_verify_google_oauth_v3
@@ -121,7 +122,12 @@ deploy:
   deployment_target: agent_engine
   ge_registration: a2a
 
-  # Latest deployed Reasoning Engine (for --register-only re-registration)
+  # Reasoning Engine resource — deploy.py's source of truth for whether this
+  # is a first-time deploy (unset / engine missing -> create) or a redeploy
+  # (engine exists -> update() in place, same resource name/A2A URL, so the
+  # GE registration + authorization never need to be detached/reattached).
+  # Auto-updated by deploy.py after a first-time create; also used by
+  # --register-only re-registration.
   reasoning_engine: projects/901535160018/locations/us-central1/reasoningEngines/1246408030514315264
 
   # Use Google OAuth access token directly — skip Entra/STS/WIF
@@ -135,16 +141,11 @@ deploy:
     - "tools"
     - "config"
 
-  # Blue/green auth-resource rotation: two stable GE OAuth authorization IDs.
-  # Each deploy registers against the standby slot (the one NOT currently
-  # active), so it's never the resource GE just detached from a deleted
-  # agent registration — avoiding the "used by another agent" lock/delay.
-  # deploy.py flips `active_auth_slot` here automatically after each
-  # successful deploy; do not edit it by hand.
-  agent_authorization_ids:
-    - "auth-emp-verify-google-oauth-v3-blue"
-    - "auth-emp-verify-google-oauth-v3-green"
-  active_auth_slot: "green"
+  # Single stable GE OAuth authorization resource. deploy.py now PATCHes the
+  # existing GE agent registration in place on redeploys (instead of
+  # deleting and recreating it), so the authorization is only ever attached
+  # once and never detached/reattached — no blue/green rotation needed.
+  agent_authorization_id: "auth-emp-verify-google-oauth-v3"
 
   ge_access_policy: "ALL_USERS"
 

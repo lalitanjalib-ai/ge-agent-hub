@@ -290,6 +290,9 @@ class BaseA2UIExecutor(AgentExecutor):
                     "OBO: forwarded user token resolved (mode=%s) — tools will run on behalf of the user",
                     get_credential_mode(),
                 )
+                from agents._base.user_context import log_obo_principal
+
+                log_obo_principal(user_token)
             else:
                 logger.info("OBO: no forwarded user token — tools will fall back to ADC (service account)")
 

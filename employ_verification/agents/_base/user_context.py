@@ -365,6 +365,79 @@ def extract_user_token(context: Any) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Principal introspection (for logging — no network calls)
+# ---------------------------------------------------------------------------
+
+def describe_forwarded_token(token: str) -> dict[str, str]:
+    """Best-effort identity hints from a forwarded token without calling tokeninfo.
+
+    Google OAuth *access* tokens from GE are often opaque (``ya29.…``) and carry
+    no decodable claims. JWT id_tokens / Entra tokens do carry ``email`` / ``sub``.
+    """
+    info: dict[str, str] = {}
+    if _looks_like_entra_jwt(token):
+        info["token_kind"] = "entra_jwt"
+        try:
+            claims = _decode_jwt_claims(token)
+            for key in ("upn", "preferred_username", "email", "sub", "iss", "aud"):
+                val = claims.get(key)
+                if val is not None:
+                    info[key] = str(val)
+        except (ValueError, binascii.Error, json.JSONDecodeError, IndexError):
+            info["decode"] = "failed"
+        return info
+
+    if _looks_like_google_jwt(token):
+        info["token_kind"] = "google_jwt"
+        try:
+            claims = _decode_jwt_claims(token)
+            for key in ("email", "sub", "iss", "aud"):
+                val = claims.get(key)
+                if val is not None:
+                    info[key] = str(val)
+        except (ValueError, binascii.Error, json.JSONDecodeError, IndexError):
+            info["decode"] = "failed"
+        return info
+
+    if token.strip().startswith("ya29."):
+        info["token_kind"] = "google_opaque_access_token"
+        return info
+
+    info["token_kind"] = "unknown_opaque"
+    return info
+
+
+def log_obo_principal(token: str | None) -> None:
+    """Log who the forwarded token represents (safe fields only, no token body)."""
+    if not token:
+        return
+    info = describe_forwarded_token(token)
+    kind = info.get("token_kind", "unknown")
+    email = info.get("email") or info.get("upn") or info.get("preferred_username")
+    sub = info.get("sub")
+    iss = info.get("iss")
+    aud = info.get("aud")
+
+    if email or sub:
+        logger.info(
+            "OBO: forwarded token principal — email=%s sub=%s iss=%s aud=%s token_kind=%s",
+            email or "(not in claims)",
+            sub or "(not in claims)",
+            iss or "(n/a)",
+            aud or "(n/a)",
+            kind,
+        )
+        return
+
+    logger.info(
+        "OBO: forwarded token is %s — email/sub not decodable locally; "
+        "the principal is the Google account that signed into Gemini Enterprise "
+        "(check GE session / OAuth consent screen, not Cloud Logging audit logs)",
+        kind,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Credential construction
 # ---------------------------------------------------------------------------
 

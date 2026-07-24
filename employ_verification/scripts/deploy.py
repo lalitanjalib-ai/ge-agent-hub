@@ -1,32 +1,66 @@
 """
-Agent Framework — Generic Deployment Script
+Deploy emp_verify_google_oauth_v3 to Vertex AI Agent Engine and register it
+in Gemini Enterprise as a pure A2A agent.
 
-Deploys agents to Vertex AI Agent Engine and registers them in Gemini Enterprise.
-All agent configuration is read from YAML files in config/.
+Auth-safe deploy model
+-----------------------
+There are two supported use cases:
+
+1. FIRST-TIME DEPLOY — no Reasoning Engine exists yet.
+   - `client.agent_engines.create()` provisions a brand-new Reasoning Engine
+     resource (new resource name / ID).
+   - The new resource name is written back into
+     `config/emp_verify_google_oauth_v3.yaml` (`deploy.reasoning_engine`) so
+     every subsequent run knows this engine already exists.
+   - The GE authorization resource (`deploy.agent_authorization_id`) is
+     created if it doesn't already exist, then attached when the GE agent is
+     registered. `create_agent()` retries with a long backoff (2m/3m/5m) if
+     GE reports the authorization as locked (`"is used by another agent"`) —
+     GE's release of a freed authorization is eventually consistent and can
+     take several minutes.
+
+2. REDEPLOY — fixing/updating the agent's code, after a first deploy.
+   - The existing Reasoning Engine resource name is read from
+     `deploy.reasoning_engine` in the YAML.
+   - `client.agent_engines.update(name=..., agent=...)` pushes the new code/
+     requirements/env_vars to the *same* resource — the resource name (and
+     therefore its A2A URL) never changes.
+   - Because the resource name never changes, the GE agent registration is
+     simply PATCHed in place (`_register_or_update`) — the authorization
+     resource is NEVER detached/reattached on a normal redeploy, so the "GE
+     doesn't release the authorization for ~5 minutes" problem never comes
+     up in this path.
+   - If the recorded engine no longer exists (e.g. manually deleted), deploy.py
+     automatically falls back to the first-time-deploy (create) path.
+
+Optional recovery path — `--force-recreate-engine`:
+   - Deliberately deletes the current Reasoning Engine and creates a brand
+     new one (e.g. for changes `update()` cannot apply, like agent_framework).
+   - Because the new engine gets a new resource name, the GE registration
+     PATCH will effectively re-point the *same* GE agent record at the new
+     A2A URL — the authorization resource itself is untouched (still
+     attached to the same GE agent id), so no re-attach/lock wait is
+     actually required for the *authorization*. However, since this path
+     recreates infrastructure, deploy.py still waits 5 minutes before
+     re-registering as a conservative safety margin for eventual consistency
+     on the Agent Engine / IAM side.
 
 Usage:
-    # Deploy a single agent
-    python scripts/deploy.py employee_verification
+    python scripts/deploy.py                    # first deploy OR in-place redeploy (auto-detected)
+    python scripts/deploy.py --dry-run          # preview config only
+    python scripts/deploy.py --force-recreate-engine   # delete + recreate the Reasoning Engine
+    python scripts/deploy.py --undeploy         # unregister from GE
+    python scripts/deploy.py --undeploy --delete-engine  # also delete the Reasoning Engine resource
 
-    # Deploy multiple specific agents
-    python scripts/deploy.py employee_verification benefits_enrollment
-
-    # Deploy ALL agents (every YAML in config/)
-    python scripts/deploy.py --all
-
-    # List available agents
-    python scripts/deploy.py --list
-
-    # Dry run — show what would be deployed
-    python scripts/deploy.py employee_verification --dry-run
-
-    # Undeploy an agent from Agent Engine
-    python scripts/deploy.py employee_verification --undeploy
+    # Re-register an already-deployed engine without redeploying
+    python scripts/deploy.py --register-only --reasoning-engine <RESOURCE_ID_OR_FULL_NAME>
 """
 
-# Add project root to sys.path and load environment variables early
+from __future__ import annotations
+
 import sys
 from pathlib import Path
+
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _REPO_ROOT = _PROJECT_ROOT.parent
 for _path in (_PROJECT_ROOT, _REPO_ROOT):
@@ -35,980 +69,692 @@ for _path in (_PROJECT_ROOT, _REPO_ROOT):
 
 import os
 from dotenv import load_dotenv
-load_dotenv(os.path.join(_PROJECT_ROOT, ".env"), override=True)
+load_dotenv(_PROJECT_ROOT / ".env", override=True)
 
 # Corporate proxies (Zscaler/Netskope): when SSL_VERIFY=false, patch Python SSL
 # before google/vertex SDK clients initialize their HTTP stacks.
-if os.environ.get("SSL_VERIFY", "").strip().lower() in ("false", "0", "no"):
+_SSL_VERIFY: bool | str = True
+_ssl_env = os.environ.get("SSL_VERIFY", "").strip().lower()
+if _ssl_env in ("false", "0", "no"):
+    _SSL_VERIFY = False
+elif _ssl_env:
+    _SSL_VERIFY = _ssl_env
+elif os.environ.get("REQUESTS_CA_BUNDLE"):
+    _SSL_VERIFY = os.environ["REQUESTS_CA_BUNDLE"]
+
+if _SSL_VERIFY is False:
     import ssl
-
     ssl._create_default_https_context = ssl._create_unverified_context  # type: ignore[attr-defined]
+    import httpx as _httpx
 
-    import httpx
+    def _no_verify(orig):
+        def wrapper(self, *a, **kw):
+            kw.setdefault("verify", False)
+            orig(self, *a, **kw)
+        return wrapper
 
-    _OrigHttpxClient = httpx.Client.__init__
-    _OrigHttpxAsync = httpx.AsyncClient.__init__
+    _httpx.Client.__init__ = _no_verify(_httpx.Client.__init__)  # type: ignore[method-assign]
+    _httpx.AsyncClient.__init__ = _no_verify(_httpx.AsyncClient.__init__)  # type: ignore[method-assign]
 
-    def _httpx_client_no_verify(self, *args, **kwargs):
-        kwargs.setdefault("verify", False)
-        _OrigHttpxClient(self, *args, **kwargs)
-
-    def _httpx_async_no_verify(self, *args, **kwargs):
-        kwargs.setdefault("verify", False)
-        _OrigHttpxAsync(self, *args, **kwargs)
-
-    httpx.Client.__init__ = _httpx_client_no_verify  # type: ignore[method-assign]
-    httpx.AsyncClient.__init__ = _httpx_async_no_verify  # type: ignore[method-assign]
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 import argparse
 import importlib
 import json
-import os
 import re
-import sys
 import time
 
 import httpx
 import requests
-import urllib3
 import vertexai
 from a2a.types import AgentSkill
-from google.auth import default
-from google.auth.transport.requests import Request
+from google.auth import default as google_auth_default
+from google.auth.transport.requests import Request as GoogleAuthRequest
+
 from google.genai import types
+from google.genai.errors import ClientError
 from vertexai.preview.reasoning_engines import A2aAgent
 from vertexai.preview.reasoning_engines.templates.a2a import create_agent_card
 
-from agents._base.config_loader import load_agent_config, list_available_agents
+from agents._base.config_loader import get_agent_config_path, load_agent_config
 from agents._base.agent_card import build_a2ui_agent_card
 
-# Import setup_agent_auth helpers inline to avoid circular imports
-from scripts.setup_agent_auth import (
-    _get_project_number,
-    _SSL_VERIFY,
-    _check_auth_exists,
-    _create_auth,
-)
+AGENT_NAME = "emp_verify_google_oauth_v3"
 
-# Suppress InsecureRequestWarning when SSL verification is disabled
-if _SSL_VERIFY is False:
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# Conservative wait for GE's eventually-consistent authorization release /
+# general infra propagation after a destructive recreate. Empirically GE can
+# take several minutes to release an authorization after the agent that used
+# it is deleted — 5 minutes is the minimum requested wait.
+_RECREATE_SAFETY_WAIT_SECONDS = 300
 
 
 # =============================================================================
-# Helpers
+# Gemini Enterprise REST helpers
 # =============================================================================
 
-def _get_bearer_token() -> str | None:
-    """Gets a bearer token for authenticating with Google Cloud."""
+def _de_hostname(ge_location: str) -> str:
+    return "discoveryengine.googleapis.com" if ge_location == "global" \
+        else f"{ge_location}-discoveryengine.googleapis.com"
+
+
+def _bearer_token() -> str | None:
     try:
-        credentials, _ = default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
-        request = Request()
-        credentials.refresh(request)
-        return credentials.token
+        creds, _ = google_auth_default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+        creds.refresh(GoogleAuthRequest())
+        return creds.token
     except Exception as e:
-        print(f"  ✗ Error getting credentials: {e}")
-        print("    Please run: gcloud auth application-default login")
+        print(f"  ✗ Could not get credentials: {e}")
+        print("    Run: gcloud auth application-default login")
         return None
 
 
-def _get_de_hostname(ge_location: str) -> str:
-    """Return the correct Discovery Engine API hostname for the given GE location.
-
-    Args:
-        ge_location: The Gemini Enterprise region ('global', 'us', 'eu', etc.)
-
-    Returns:
-        The correct API hostname string.
-    """
-    if ge_location == "global":
-        return "discoveryengine.googleapis.com"
-    return f"{ge_location}-discoveryengine.googleapis.com"
+def _get_project_number(project_id: str) -> str | None:
+    token = _bearer_token()
+    if not token:
+        return None
+    url = f"https://cloudresourcemanager.googleapis.com/v1/projects/{project_id}"
+    resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, verify=_SSL_VERIFY)
+    return resp.json().get("projectNumber") if resp.status_code == 200 else None
 
 
-# GE's deletion of a prior agent registration is eventually consistent: the
-# authorization resource can appear "in use" for a few seconds after the
-# owning agent was deleted. Retry registration with backoff instead of
-# failing immediately on this specific, transient 400.
-_AUTH_IN_USE_MARKER = "is used by another agent"
-_REGISTER_RETRY_DELAYS = (3, 6, 10)  # seconds, applied between attempts
+class GEClient:
+    """Thin wrapper around the Gemini Enterprise agents/authorizations REST API."""
 
+    def __init__(self, project_id: str, app_id: str, ge_location: str = "global"):
+        self.project_id = project_id
+        self.app_id = app_id
+        self.ge_location = ge_location
+        self._host = _de_hostname(ge_location)
 
-def _register_agent_on_gemini_enterprise(
-    project_id: str,
-    app_id: str,
-    agent_card: str,
-    agent_name: str,
-    display_name: str,
-    description: str,
-    agent_authorization: str | None = None,
-    ge_location: str = "global",
-    reasoning_engine: str | None = None,
-    ge_registration: str = "adk",
-) -> dict | None:
-    """Register an agent in Gemini Enterprise.
+    def _agents_url(self, agent_id: str = "") -> str:
+        base = (
+            f"https://{self._host}/v1alpha/projects/{self.project_id}/"
+            f"locations/{self.ge_location}/collections/default_collection/"
+            f"engines/{self.app_id}/assistants/default_assistant/agents"
+        )
+        return f"{base}/{agent_id}" if agent_id else base
 
-    ge_registration:
-      - ``adk`` — link GE to a provisioned Reasoning Engine (adkAgentDefinition)
-      - ``a2a`` — GE calls the A2A URL from jsonAgentCard (a2aAgentDefinition)
-
-    Retries automatically if the authorization resource momentarily reports
-    "is used by another agent" — a transient race after unregistering the
-    previous agent that owned it (GE agent deletion is eventually consistent).
-    """
-    de_hostname = _get_de_hostname(ge_location)
-    api_endpoint = (
-        f"https://{de_hostname}/v1alpha/projects/{project_id}/"
-        f"locations/{ge_location}/collections/default_collection/engines/{app_id}/"
-        "assistants/default_assistant/agents"
-    )
-
-    payload = {
-        "name": agent_name,
-        "displayName": display_name,
-        "description": description,
-    }
-
-    if ge_registration == "a2a":
-        payload["a2aAgentDefinition"] = {"jsonAgentCard": agent_card}
-    elif reasoning_engine:
-        payload["adkAgentDefinition"] = {
-            "toolSettings": {
-                "toolDescription": display_name
-            },
-            "provisionedReasoningEngine": {
-                "reasoningEngine": reasoning_engine
-            }
+    def _headers(self) -> dict | None:
+        token = _bearer_token()
+        if not token:
+            return None
+        return {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "X-Goog-User-Project": self.project_id,
         }
-    else:
-        payload["a2aAgentDefinition"] = {"jsonAgentCard": agent_card}
 
-    if agent_authorization:
-        payload["authorization_config"] = {"agent_authorization": agent_authorization}
+    def get_agent(self, agent_id: str) -> dict | None:
+        headers = self._headers()
+        if not headers:
+            return None
+        resp = requests.get(self._agents_url(agent_id), headers=headers, verify=_SSL_VERIFY)
+        return resp.json() if resp.status_code == 200 else None
 
-    bearer_token = _get_bearer_token()
-    if not bearer_token:
+    def find_agent_by_display_name(self, display_name: str) -> dict | None:
+        """GE assigns its own numeric resource ID on create (the 'name' field in
+        the create payload is NOT used as the ID), so finding an existing
+        registration on redeploy requires listing and matching by display name.
+        """
+        headers = self._headers()
+        if not headers:
+            return None
+        resp = requests.get(self._agents_url(), headers=headers, params={"pageSize": 1000}, verify=_SSL_VERIFY)
+        if resp.status_code != 200:
+            return None
+        for agent in resp.json().get("agents", []):
+            if agent.get("displayName") == display_name:
+                return agent
         return None
 
-    headers = {
-        "Authorization": f"Bearer {bearer_token}",
-        "Content-Type": "application/json",
-        "X-Goog-User-Project": project_id,
-    }
 
-    attempts = len(_REGISTER_RETRY_DELAYS) + 1
-    response = None
-    for attempt in range(1, attempts + 1):
-        response = requests.post(
-            api_endpoint, headers=headers, json=payload, verify=_SSL_VERIFY
+    # GE's authorization-in-use lock is eventually consistent: after an agent
+    # using an authorization is deleted, GE can take several minutes before
+    # it allows a new agent to attach to that same authorization. Retry with
+    # a long backoff (2m, 3m, 5m) rather than failing fast.
+    _LOCK_RETRY_DELAYS = (120, 180, 300)
+
+    def create_agent(self, payload: dict) -> dict | None:
+        """POST a new agent. Retries with long backoff if the authorization is locked."""
+        headers = self._headers()
+        if not headers:
+            return None
+        attempts = len(self._LOCK_RETRY_DELAYS) + 1
+        for attempt in range(1, attempts + 1):
+            resp = requests.post(self._agents_url(), headers=headers, json=payload, verify=_SSL_VERIFY)
+            if resp.status_code == 200:
+                return resp.json()
+            if "is used by another agent" in resp.text and attempt <= len(self._LOCK_RETRY_DELAYS):
+                delay = self._LOCK_RETRY_DELAYS[attempt - 1]
+                print(
+                    f"  ⏳ Authorization locked (attempt {attempt}/{attempts}) — "
+                    f"waiting {delay // 60}m{delay % 60:02d}s for GE to release it..."
+                )
+                time.sleep(delay)
+                continue
+            print(f"  ✗ GE create failed (HTTP {resp.status_code}): {resp.text}")
+            return None
+        return None
+
+
+    def patch_agent(self, agent_id: str, payload: dict, update_mask: list[str]) -> dict | None:
+        headers = self._headers()
+        if not headers:
+            return None
+        resp = requests.patch(
+            self._agents_url(agent_id),
+            headers=headers,
+            json=payload,
+            params={"updateMask": ",".join(update_mask)},
+            verify=_SSL_VERIFY,
         )
+        if resp.status_code == 200:
+            return resp.json()
+        print(f"  ✗ GE patch failed (HTTP {resp.status_code}): {resp.text}")
+        return None
 
-        if response.status_code == 200:
-            return response.json()
-
-        is_auth_lock = (
-            response.status_code == 400
-            and _AUTH_IN_USE_MARKER in response.text
-        )
-        if is_auth_lock and attempt <= len(_REGISTER_RETRY_DELAYS):
-            delay = _REGISTER_RETRY_DELAYS[attempt - 1]
-            print(
-                f"  ⏳ Auth resource momentarily locked by the just-removed "
-                f"agent (attempt {attempt}/{attempts}) — retrying in {delay}s..."
-            )
-            time.sleep(delay)
-            continue
-
-        break
-
-    # Log the full error for debugging — always show the complete response body
-    print(f"  ✗ GE registration failed (HTTP {response.status_code})")
-    print(f"    URL: {api_endpoint}")
-    print(f"    Response: {response.text}")
-    if agent_authorization:
-        print(f"    Auth resource used: {agent_authorization}")
-    if response.status_code == 400 and _AUTH_IN_USE_MARKER in response.text:
-        auth_id_hint = (
-            agent_authorization.rsplit("/", 1)[-1] if agent_authorization else "<AUTH_ID>"
-        )
-        print(
-            "    ℹ The authorization resource is still locked after retries. "
-            "Force-recreate it and try again:\n"
-            f"      python scripts/setup_agent_auth.py --id {auth_id_hint} --force\n"
-            "      python scripts/deploy.py <agent> --register-only "
-            "--reasoning-engine <RESOURCE_ID>"
-        )
-    return None
-
-
-def _verify_ge_agent_registration(
-    project_id: str,
-    app_id: str,
-    agent_name: str,
-    ge_location: str = "global",
-) -> None:
-    """Fetch a registered GE agent and log whether OAuth authorization is attached."""
-    de_hostname = _get_de_hostname(ge_location)
-    url = (
-        f"https://{de_hostname}/v1alpha/projects/{project_id}/"
-        f"locations/{ge_location}/collections/default_collection/engines/{app_id}/"
-        f"assistants/default_assistant/agents/{agent_name}"
-    )
-
-    bearer_token = _get_bearer_token()
-    if not bearer_token:
-        return
-
-    headers = {
-        "Authorization": f"Bearer {bearer_token}",
-        "X-Goog-User-Project": project_id,
-    }
-
-    response = requests.get(url, headers=headers, verify=_SSL_VERIFY)
-    if response.status_code != 200:
-        print(f"  ⚠ Could not verify GE registration (HTTP {response.status_code})")
-        return
-
-    agent = response.json()
-    auth_config = agent.get("authorizationConfig") or agent.get("authorization_config") or {}
-    agent_auth = auth_config.get("agentAuthorization") or auth_config.get("agent_authorization")
-    reg_type = "a2a" if agent.get("a2aAgentDefinition") else "adk"
-    print(f"  ✓ GE registration type: {reg_type}")
-    if agent_auth:
-        print(f"  ✓ GE agent has OAuth authorization: {agent_auth}")
-    else:
-        print("  ⚠ GE agent registered WITHOUT authorizationConfig — users will not be prompted to sign in")
-
-
-def _resolve_ge_agent_id(
-    project_id: str,
-    app_id: str,
-    ge_location: str,
-    *,
-    agent_name: str | None = None,
-    display_name: str | None = None,
-) -> str | None:
-    """Resolve the server-assigned GE agent ID (numeric) for PATCH/GET calls."""
-    if agent_name:
-        de_hostname = _get_de_hostname(ge_location)
-        url = (
-            f"https://{de_hostname}/v1alpha/projects/{project_id}/"
-            f"locations/{ge_location}/collections/default_collection/engines/{app_id}/"
-            f"assistants/default_assistant/agents/{agent_name}"
-        )
-        bearer_token = _get_bearer_token()
-        if bearer_token:
-            headers = {
-                "Authorization": f"Bearer {bearer_token}",
-                "X-Goog-User-Project": project_id,
-            }
-            response = requests.get(url, headers=headers, verify=_SSL_VERIFY)
-            if response.status_code == 200:
-                return response.json().get("name", "").split("/")[-1]
-
-    if display_name:
-        for agent in _list_ge_agents(project_id, app_id, ge_location):
-            if agent.get("displayName") == display_name:
-                return agent.get("name", "").split("/")[-1]
-    return None
-
-
-def _set_agent_access_policy(
-    project_id: str,
-    app_id: str,
-    agent_name: str,
-    access_policy: str = "ALL_USERS",
-    ge_location: str = "global",
-    display_name: str | None = None,
-) -> bool:
-    """Set gallery visibility for a registered GE agent via sharingConfig.scope.
-
-    Args:
-        access_policy: ``ALL_USERS`` (agent gallery) or ``ADMINS_ONLY`` (admin table only).
-    """
-    ge_agent_id = _resolve_ge_agent_id(
-        project_id,
-        app_id,
-        ge_location,
-        agent_name=agent_name,
-        display_name=display_name,
-    )
-    if not ge_agent_id:
-        print("  ⚠ Could not resolve GE agent ID for sharing config update")
-        return False
-
-    de_hostname = _get_de_hostname(ge_location)
-    api_endpoint = (
-        f"https://{de_hostname}/v1alpha/projects/{project_id}/"
-        f"locations/{ge_location}/collections/default_collection/engines/{app_id}/"
-        f"assistants/default_assistant/agents/{ge_agent_id}"
-    )
-
-    bearer_token = _get_bearer_token()
-    if not bearer_token:
-        return False
-
-    headers = {
-        "Authorization": f"Bearer {bearer_token}",
-        "Content-Type": "application/json",
-        "X-Goog-User-Project": project_id,
-    }
-
-    payload = {"sharingConfig": {"scope": access_policy}}
-    params = {"updateMask": "sharingConfig.scope"}
-
-    response = requests.patch(
-        api_endpoint, headers=headers, json=payload, params=params, verify=_SSL_VERIFY
-    )
-
-    if response.status_code == 200:
-        return True
-
-    print(f"  ⚠ Could not set sharing config (HTTP {response.status_code}): {response.text}")
-    return False
-
-
-def _list_ge_agents(
-    project_id: str,
-    app_id: str,
-    ge_location: str = "global",
-) -> list[dict]:
-    """List agents registered in Gemini Enterprise."""
-    de_hostname = _get_de_hostname(ge_location)
-    api_endpoint = (
-        f"https://{de_hostname}/v1alpha/projects/{project_id}/"
-        f"locations/{ge_location}/collections/default_collection/engines/{app_id}/"
-        "assistants/default_assistant/agents?pageSize=200"
-    )
-
-    bearer_token = _get_bearer_token()
-    if not bearer_token:
-        return []
-
-    headers = {
-        "Authorization": f"Bearer {bearer_token}",
-        "Content-Type": "application/json",
-        "X-Goog-User-Project": project_id,
-    }
-
-    try:
-        response = requests.get(api_endpoint, headers=headers, verify=_SSL_VERIFY)
-        if response.status_code == 200:
-            return response.json().get("agents", [])
-    except Exception as e:
-        print(f"  ⚠ Error listing GE agents: {e}")
-    return []
-
-
-def _delete_ge_agent_by_id(
-    project_id: str,
-    app_id: str,
-    ge_agent_id: str,
-    ge_location: str = "global",
-) -> bool:
-    """Delete a GE agent by its server-assigned ID."""
-    de_hostname = _get_de_hostname(ge_location)
-    api_endpoint = (
-        f"https://{de_hostname}/v1alpha/projects/{project_id}/"
-        f"locations/{ge_location}/collections/default_collection/engines/{app_id}/"
-        f"assistants/default_assistant/agents/{ge_agent_id}"
-    )
-
-    bearer_token = _get_bearer_token()
-    if not bearer_token:
-        return False
-
-    headers = {
-        "Authorization": f"Bearer {bearer_token}",
-        "Content-Type": "application/json",
-        "X-Goog-User-Project": project_id,
-    }
-
-    response = requests.delete(api_endpoint, headers=headers, verify=_SSL_VERIFY)
-    return response.status_code in (200, 204, 404)
-
-
-def _unregister_agent_from_gemini_enterprise(
-    project_id: str,
-    app_id: str,
-    agent_name: str,
-    ge_location: str = "global",
-    display_name: str | None = None,
-    auth_id: str | None = None,
-) -> bool:
-    """Unregister an agent from Gemini Enterprise.
-
-    GE assigns server-side numeric agent IDs, so we also search by display name
-    and per-agent authorization ID to remove stale registrations.
-    """
-    deleted_any = False
-
-    if _delete_ge_agent_by_id(project_id, app_id, agent_name, ge_location):
-        deleted_any = True
-
-    auth_suffix = f"/authorizations/{auth_id}" if auth_id else None
-
-    for agent in _list_ge_agents(project_id, app_id, ge_location):
-        ge_agent_id = agent.get("name", "").split("/")[-1]
-        if ge_agent_id == agent_name:
-            continue
-
-        agent_display = agent.get("displayName", "")
-        agent_auth = (
-            (agent.get("authorizationConfig") or {}).get("agentAuthorization") or ""
-        )
-
-        match = False
-        if display_name and agent_display == display_name:
-            match = True
-        if auth_suffix and auth_suffix in agent_auth:
-            match = True
-
-        if match and _delete_ge_agent_by_id(project_id, app_id, ge_agent_id, ge_location):
-            print(f"  ✓ Removed stale GE agent '{agent_display}' ({ge_agent_id})")
-            deleted_any = True
-
-    return deleted_any
+    def delete_agent(self, agent_id: str) -> bool:
+        headers = self._headers()
+        if not headers:
+            return False
+        resp = requests.delete(self._agents_url(agent_id), headers=headers, verify=_SSL_VERIFY)
+        return resp.status_code in (200, 204, 404)
 
 
 # =============================================================================
-# Auth resource resolution (single stable ID, or blue/green rotation)
+# Authorization resource (single stable ID)
 # =============================================================================
 
-def _ensure_auth_resource(
-    *,
-    auth_id: str,
-    ge_location: str,
-    project_id: str,
-    project_number: str,
-    oauth_client_id: str,
-    oauth_client_secret: str,
-) -> str | None:
-    """Return the resource name for ``auth_id``, creating it if it doesn't exist."""
+def _ensure_auth_resource(auth_id: str, project_id: str, project_number: str, ge_location: str) -> str | None:
+    """Return the auth resource name, creating it if it doesn't already exist."""
+    from scripts.setup_agent_auth import _check_auth_exists, _create_auth
+
     existing = _check_auth_exists(project_number, ge_location, auth_id, project_id)
     if existing:
         return existing.get("name")
 
-    print(f"  ⏳ Creating auth resource '{auth_id}' in {ge_location}...")
-    result_auth = _create_auth(
+    client_id = os.environ.get("OAUTH_CLIENT_ID")
+    client_secret = os.environ.get("OAUTH_CLIENT_SECRET")
+    if not (client_id and client_secret):
+        print("  ⚠ Missing OAUTH_CLIENT_ID/SECRET — skipping auth resource creation")
+        return None
+
+    print(f"  ⏳ Creating auth resource '{auth_id}'...")
+    result = _create_auth(
         project_number=project_number,
         ge_location=ge_location,
         auth_id=auth_id,
         project_id=project_id,
-        oauth_client_id=oauth_client_id,
-        oauth_client_secret=oauth_client_secret,
+        oauth_client_id=client_id,
+        oauth_client_secret=client_secret,
     )
-    if result_auth:
-        print(f"  ✓ Created auth resource: {result_auth.get('name')}")
-        return result_auth.get("name")
-
+    if result:
+        print(f"  ✓ Created auth resource: {result.get('name')}")
+        return result.get("name")
     print(f"  ✗ Could not create auth resource '{auth_id}'")
     return None
 
 
-def _set_active_auth_slot(agent_name: str, slot: str) -> None:
-    """Persist ``deploy.active_auth_slot: <slot>`` into config/<agent_name>.yaml.
+# =============================================================================
+# GE registration (create on first deploy, PATCH in place on redeploys)
+# =============================================================================
 
-    Does a targeted text replace (not a full YAML re-dump) so comments and
-    formatting elsewhere in the file are left untouched.
-    """
-    config_path = _PROJECT_ROOT / "config" / f"{agent_name}.yaml"
-    text = config_path.read_text()
-    line_re = re.compile(r"^(\s*)active_auth_slot:\s*.*$", flags=re.MULTILINE)
-    new_line = rf'\1active_auth_slot: "{slot}"'
-    if line_re.search(text):
-        text = line_re.sub(new_line, text, count=1)
-    else:
-        text = text.replace("deploy:\n", f'deploy:\n  active_auth_slot: "{slot}"\n', 1)
-    config_path.write_text(text)
-    print(f"  ✓ Recorded active auth slot '{slot}' in config/{agent_name}.yaml")
+def _build_agent_payload(display_name: str, description: str, agent_card_json: str) -> dict:
+    return {
+        "displayName": display_name,
+        "description": description,
+        "a2aAgentDefinition": {"jsonAgentCard": agent_card_json},
+    }
 
 
-def _resolve_agent_authorization(
-    deploy_cfg: dict,
-    project_id: str,
-    agent_name: str | None = None,
-) -> str | None:
-    """Create or resolve the GE OAuth authorization resource for an agent.
-
-    Supports two shapes in the YAML:
-      - ``agent_authorization_id: "auth-foo"`` — single stable ID (default).
-      - ``agent_authorization_ids: ["auth-foo-blue", "auth-foo-green"]`` plus
-        ``active_auth_slot: "blue"|"green"`` — blue/green rotation. Each
-        deploy registers against the *standby* slot (the one not currently
-        active), so it's never the resource GE just detached from a deleted
-        agent — avoiding the "used by another agent" lock/delay entirely.
-        After a successful deploy, the caller flips ``active_auth_slot``.
-    """
-    ge_location = os.environ.get("GE_LOCATION", "global")
-    auth_ids = deploy_cfg.get("agent_authorization_ids")
-
-    if auth_ids:
-        if len(auth_ids) != 2:
-            print("  ✗ agent_authorization_ids must list exactly 2 slots (blue/green)")
-            return None
-
-        oauth_client_id = os.environ.get("OAUTH_CLIENT_ID")
-        oauth_client_secret = os.environ.get("OAUTH_CLIENT_SECRET")
-        project_number = _get_project_number(project_id)
-        if not (project_number and oauth_client_id and oauth_client_secret):
-            print("  ⚠ Missing OAUTH_CLIENT_ID/SECRET — skipping auth resource creation")
-            return None
-
-        active_slot = deploy_cfg.get("active_auth_slot", "blue")
-        slot_names = ["blue", "green"]
-        slot_ids = dict(zip(slot_names, auth_ids))
-        standby_slot = "green" if active_slot == "blue" else "blue"
-        standby_auth_id = slot_ids[standby_slot]
-
-        print(
-            f"  ├── Auth slots: active='{active_slot}', deploying to "
-            f"standby='{standby_slot}' ({standby_auth_id})"
-        )
-        agent_authorization = _ensure_auth_resource(
-            auth_id=standby_auth_id,
-            ge_location=ge_location,
-            project_id=project_id,
-            project_number=project_number,
-            oauth_client_id=oauth_client_id,
-            oauth_client_secret=oauth_client_secret,
-        )
-        if agent_authorization and agent_name:
-            _set_active_auth_slot(agent_name, standby_slot)
-        return agent_authorization
-
-    auth_id = deploy_cfg.get("agent_authorization_id")
-    if auth_id:
-        oauth_client_id = os.environ.get("OAUTH_CLIENT_ID")
-        oauth_client_secret = os.environ.get("OAUTH_CLIENT_SECRET")
-        project_number = _get_project_number(project_id)
-
-        if project_number and oauth_client_id and oauth_client_secret:
-            agent_authorization = _ensure_auth_resource(
-                auth_id=auth_id,
-                ge_location=ge_location,
-                project_id=project_id,
-                project_number=project_number,
-                oauth_client_id=oauth_client_id,
-                oauth_client_secret=oauth_client_secret,
-            )
-            if agent_authorization:
-                return agent_authorization
-            print(
-                f"  ✗ Could not create auth resource '{auth_id}' — "
-                "GE will not prompt for login without it"
-            )
-            return None
-
-        print("  ⚠ Missing OAUTH_CLIENT_ID/SECRET — skipping auth resource creation")
-        return None
-
-    env_auth = os.environ.get("AGENT_AUTHORIZATION")
-    if env_auth is not None:
-        env_auth_stripped = env_auth.strip('"').strip()
-        if env_auth_stripped.lower() not in ("none", ""):
-            print(f"  ✓ Using AGENT_AUTHORIZATION from environment: {env_auth_stripped}")
-            return env_auth_stripped
-        print("  ⚠ Agent authorization disabled (AGENT_AUTHORIZATION=none)")
-    return None
-
-
-def _register_agent_in_gemini_enterprise(
+def _register_or_update(
+    ge: GEClient,
     *,
-    agent_name: str,
-    config: dict,
-    a2ui_agent_card_str: str,
+    display_name: str,
+    description: str,
+    agent_card_json: str,
     agent_authorization: str | None,
-    reasoning_engine: str | None = None,
-    ge_registration: str | None = None,
+    access_policy: str,
 ) -> bool:
-    """Unregister any prior GE agent and register with the latest card + auth."""
-    agent_cfg = config.get("agent", {})
-    deploy_cfg = config.get("deploy", {})
-    ge_registration = ge_registration or deploy_cfg.get("ge_registration", "adk")
-    project_id = os.environ.get("PROJECT_ID")
-    app_id = os.environ.get("GEMINI_ENTERPRISE_APP_ID")
-    ge_location = os.environ.get("GE_LOCATION", "global")
-    display_name = agent_cfg.get("display_name", agent_name)
-    description = agent_cfg.get("description", "")
+    """Create the GE agent on first deploy, or PATCH it in place on redeploys.
 
-    print(f"  ⏳ Removing any existing GE registration for '{agent_name}_agent'...")
-    _unregister_agent_from_gemini_enterprise(
-        project_id=project_id,
-        app_id=app_id,
-        agent_name=f"{agent_name}_agent",
-        ge_location=ge_location,
-        display_name=display_name,
-        auth_id=deploy_cfg.get("agent_authorization_id"),
-    )
+    PATCHing in place (rather than delete+recreate) means the authorization
+    resource stays attached the whole time — no detach/reattach race, no
+    "used by another agent" lock on redeploys.
 
-    print(f"  ⏳ Registering in Gemini Enterprise ({ge_registration.upper()} registration)...")
-    result = _register_agent_on_gemini_enterprise(
-        project_id=project_id,
-        app_id=app_id,
-        agent_card=a2ui_agent_card_str,
-        agent_name=f"{agent_name}_agent",
-        display_name=display_name,
-        description=description,
-        agent_authorization=agent_authorization,
-        ge_location=ge_location,
-        reasoning_engine=reasoning_engine if ge_registration == "adk" else None,
-        ge_registration=ge_registration,
-    )
+    GE assigns its own numeric resource ID on create (the ``name`` field sent
+    in the create payload is NOT used as the ID), so the existing agent must
+    be found by display name rather than by guessing its resource ID.
+    """
+    payload = _build_agent_payload(display_name, description, agent_card_json)
+    existing = ge.find_agent_by_display_name(display_name)
 
-    if not result:
-        print("  ⚠ Agent deployed but GE registration failed")
-        return False
+    if existing:
+        existing_id = existing.get("name", "").split("/")[-1]
+        update_mask = ["displayName", "description", "a2aAgentDefinition"]
 
-    print("  ✓ Registered in Gemini Enterprise")
-    _verify_ge_agent_registration(
-        project_id=project_id,
-        app_id=app_id,
-        agent_name=f"{agent_name}_agent",
-        ge_location=ge_location,
-    )
+        # Defensive fix: if a prior run registered this agent WITHOUT an
+        # authorization attached (e.g. auth creation failed but registration
+        # otherwise succeeded), make sure a redeploy heals that instead of
+        # silently leaving the agent unauthenticated forever.
+        existing_auth = (
+            existing.get("authorizationConfig", {}).get("agentAuthorization")
+            or existing.get("authorization_config", {}).get("agent_authorization")
+        )
+        if agent_authorization and not existing_auth:
+            print(f"  ⚠ Existing GE agent has no authorization attached — attaching '{agent_authorization}' now")
+            payload["authorization_config"] = {"agent_authorization": agent_authorization}
+            update_mask.append("authorization_config")
 
-    access_policy = deploy_cfg.get("ge_access_policy", "ALL_USERS")
-    print(f"  ⏳ Setting gallery visibility to '{access_policy}'...")
-    if _set_agent_access_policy(
-        project_id=project_id,
-        app_id=app_id,
-        agent_name=f"{agent_name}_agent",
-        access_policy=access_policy,
-        ge_location=ge_location,
-        display_name=display_name,
-    ):
-        print(f"  ✓ Gallery visibility set to '{access_policy}'")
+        print(f"  ⏳ Updating existing GE registration '{existing_id}' in place...")
+        result = ge.patch_agent(existing_id, payload, update_mask=update_mask)
+        if not result:
+            return False
+        print("  ✓ Updated Gemini Enterprise registration (in place — auth resource untouched)")
     else:
-        print("  ⚠ Could not set access policy — enable the agent manually in GE if needed")
+        print(f"  ⏳ Registering '{display_name}' in Gemini Enterprise (first-time registration)...")
+        if agent_authorization:
+            payload["authorization_config"] = {"agent_authorization": agent_authorization}
+        result = ge.create_agent(payload)
+        if not result:
+            return False
+        print("  ✓ Registered in Gemini Enterprise")
+
+    result_id = result.get("name", "").split("/")[-1]
+    ge.patch_agent(
+        result_id, {"sharingConfig": {"scope": access_policy}},
+        update_mask=["sharingConfig.scope"],
+    )
+    print(f"  ✓ Gallery visibility set to '{access_policy}'")
     return True
 
 
+
 # =============================================================================
-# Deploy / Undeploy a single agent (Vertex AI Agent Engine only)
+# YAML config write-back (persist the Reasoning Engine resource name)
 # =============================================================================
 
-def deploy_agent(agent_name: str, dry_run: bool = False) -> bool:
-    """Deploy a single agent to Vertex AI Agent Engine and register it in GE.
+def _persist_reasoning_engine(agent_name: str, engine_resource: str) -> None:
+    """Write/replace `deploy.reasoning_engine` in the agent's YAML config.
 
-    Args:
-        agent_name: Name matching config/<agent_name>.yaml
-        dry_run: If True, just print config without deploying.
-
-    Returns:
-        True if successful, False otherwise.
+    Uses a targeted regex/line-based edit (not a full YAML dump) so we never
+    disturb comments, key ordering, or formatting elsewhere in the file.
     """
+    config_path = get_agent_config_path(agent_name)
     try:
-        config = load_agent_config(agent_name)
-    except FileNotFoundError as e:
-        print(f"  ✗ {e}")
+        text = config_path.read_text(encoding="utf-8")
+    except OSError as e:
+        print(f"  ⚠ Could not read {config_path} to persist reasoning_engine: {e}")
+        return
+
+    line_re = re.compile(r"^(\s*reasoning_engine:).*$", re.MULTILINE)
+    new_line = rf"\1 {engine_resource}"
+
+    if line_re.search(text):
+        new_text = line_re.sub(new_line, text, count=1)
+    else:
+        # Insert right after the `deploy:` section header.
+        deploy_re = re.compile(r"^(deploy:\s*\n)", re.MULTILINE)
+        if deploy_re.search(text):
+            new_text = deploy_re.sub(
+                rf"\1  reasoning_engine: {engine_resource}\n", text, count=1
+            )
+        else:
+            print(f"  ⚠ Could not find 'deploy:' section in {config_path} — "
+                  f"add this manually: reasoning_engine: {engine_resource}")
+            return
+
+    try:
+        config_path.write_text(new_text, encoding="utf-8")
+        print(f"  ✓ Persisted reasoning_engine to {config_path.name}")
+    except OSError as e:
+        print(f"  ⚠ Could not write {config_path}: {e}")
+
+
+# =============================================================================
+# Agent Engine resource helpers (existence check, create, update, delete)
+# =============================================================================
+
+def _normalize_engine_resource(value: str, project_id: str, location: str) -> str:
+    """Accept a bare ID or a full resource name; always return the full name."""
+    if value.startswith("projects/"):
+        return value
+    return f"projects/{project_id}/locations/{location}/reasoningEngines/{value}"
+
+
+def _engine_exists(client: "vertexai.Client", engine_resource: str) -> bool:
+    """Return True iff the Reasoning Engine resource still exists."""
+    try:
+        client.agent_engines.get(name=engine_resource)
+        return True
+    except ClientError as e:
+        if e.code == 404:
+            return False
+        # Any other error (e.g. permission issue, malformed name) — don't
+        # silently fall through to a create/delete decision; surface it.
+        print(f"  ⚠ Could not verify existing engine (HTTP {e.code}): {e}")
+        return False
+    except Exception as e:
+        print(f"  ⚠ Could not verify existing engine: {e}")
         return False
 
-    return _deploy_agent_engine(agent_name, config, dry_run=dry_run)
 
-
-def _deploy_agent_engine(agent_name: str, config: dict, dry_run: bool = False) -> bool:
-    """Deploy to Vertex AI Agent Engine and register in Gemini Enterprise."""
+def _build_a2a_agent(config: dict):
+    """Build the A2aAgent instance + display metadata used for create/update."""
     agent_cfg = config.get("agent", {})
     deploy_cfg = config.get("deploy", {})
 
-    model = agent_cfg.get("model", os.environ.get("GOOGLE_GENAI_MODEL", "gemini-2.5-flash"))
-    display_name = agent_cfg.get("display_name", agent_name)
+    display_name = agent_cfg.get("display_name", AGENT_NAME)
     description = agent_cfg.get("description", "")
-    tool_paths = agent_cfg.get("tools", [])
     skills_cfg = deploy_cfg.get("skills", [])
 
-    # Environment
-    project_id = os.environ.get("PROJECT_ID")
-    location = deploy_cfg.get("region", os.environ.get("LOCATION", "us-central1"))
-    storage = os.environ.get("STORAGE_BUCKET")
-    api_endpoint = f"{location}-aiplatform.googleapis.com"
-    api_version = deploy_cfg.get("api_version", "v1beta1")
-
-    print(f"  ├── Model: {model}")
-    print(f"  ├── Tools: {len(tool_paths)} tools")
-    print(f"  ├── Skills: {len(skills_cfg)} skills defined")
-    print(f"  ├── GE registration: {deploy_cfg.get('ge_registration', 'adk')}")
-
-    if dry_run:
-        print(f"  ├── Region: {location}")
-        print(f"  ├── Display Name: {display_name}")
-        print(f"  ├── Description: {description[:80]}...")
-        print(f"  ├── Tool paths:")
-        for tp in tool_paths:
-            print(f"  │   - {tp}")
-        print(f"  ├── Skills:")
-        for s in skills_cfg:
-            print(f"  │   - {s.get('name', s.get('id', '?'))}")
-        print(f"  └── 🔍 DRY RUN — nothing deployed")
-        return True
-
-    # Initialize Vertex AI
-    vertexai.init(
-        project=project_id,
-        location=location,
-        api_endpoint=api_endpoint,
-        staging_bucket=storage,
-    )
-
-    client = vertexai.Client(
-        project=project_id,
-        location=location,
-        http_options=types.HttpOptions(api_version=api_version),
-    )
-
-    # Build skills from config
-    skills = []
-    for skill_def in skills_cfg:
-        skills.append(AgentSkill(
-            id=skill_def.get("id", ""),
-            name=skill_def.get("name", ""),
-            description=skill_def.get("description", ""),
-            tags=skill_def.get("tags", []),
-            examples=skill_def.get("examples", []),
-        ))
-
-    # Default I/O modes
-    defaults = config.get("deploy", {})
-    input_modes = defaults.get("default_input_modes", ["text/plain"])
-    output_modes = defaults.get("default_output_modes", ["text/plain"])
-
-    # Create agent card
+    skills = [
+        AgentSkill(
+            id=s.get("id", ""), name=s.get("name", ""), description=s.get("description", ""),
+            tags=s.get("tags", []), examples=s.get("examples", []),
+        )
+        for s in skills_cfg
+    ]
     agent_card = create_agent_card(
-        agent_name=display_name,
-        description=description,
-        skills=skills,
-        default_input_modes=input_modes,
-        default_output_modes=output_modes,
+        agent_name=display_name, description=description, skills=skills,
+        default_input_modes=deploy_cfg.get("default_input_modes", ["text/plain"]),
+        default_output_modes=deploy_cfg.get("default_output_modes", ["text/plain"]),
     )
 
-    # Dynamically import the executor class
-    executor_module_path = f"agents.{agent_name}.executor"
-    try:
-        executor_module = importlib.import_module(executor_module_path)
-    except ImportError as e:
-        print(f"  ✗ Could not import executor from {executor_module_path}: {e}")
-        return False
-
-    # Find the executor class (first subclass of AgentExecutor in the module)
-    executor_class = None
-    for attr_name in dir(executor_module):
-        attr = getattr(executor_module, attr_name)
-        if (
-            isinstance(attr, type)
-            and hasattr(attr, "AGENT_CONFIG_NAME")
-            and attr_name != "BaseA2UIExecutor"
-        ):
-            executor_class = attr
-            break
-
+    executor_class = _load_executor_class(AGENT_NAME)
     if executor_class is None:
-        print(f"  ✗ No executor class found in {executor_module_path}")
-        return False
+        raise RuntimeError(f"No executor class found for {AGENT_NAME}")
 
-    # Create A2aAgent
-    a2a_agent = A2aAgent(
-        agent_card=agent_card,
-        agent_executor_builder=executor_class,
-    )
+    a2a_agent = A2aAgent(agent_card=agent_card, agent_executor_builder=executor_class)
     a2a_agent.set_up()
+    return a2a_agent, display_name, description
 
-    # Build requirements
-    base_reqs = config.get("deploy", {}).get("base_requirements", [])
-    extra_reqs = deploy_cfg.get("extra_requirements", [])
-    all_requirements = base_reqs + extra_reqs
 
-    # Build extra packages (resolve repo-root widgets path when needed).
-    extra_packages = []
-    for pkg in deploy_cfg.get("extra_packages", []):
-        if pkg in ("widgets", "../widgets"):
-            extra_packages.append(str(_REPO_ROOT / "widgets"))
-        else:
-            extra_packages.append(pkg)
+def _build_engine_config(config: dict, project_id: str, api_version: str, storage: str) -> dict:
+    deploy_cfg = config.get("deploy", {})
+    description = config.get("agent", {}).get("description", "")
 
-    # Build env vars
-    env_vars = deploy_cfg.get("env_vars", {})
-    env_vars["PROJECT_ID"] = project_id
+    requirements = deploy_cfg.get("base_requirements", []) + deploy_cfg.get("extra_requirements", [])
+    extra_packages = [
+        str(_REPO_ROOT / "widgets") if pkg in ("widgets", "../widgets") else pkg
+        for pkg in deploy_cfg.get("extra_packages", [])
+    ]
+    env_vars = {**deploy_cfg.get("env_vars", {}), "PROJECT_ID": project_id}
+    if _ssl_env:
+        env_vars["SSL_VERIFY"] = os.environ["SSL_VERIFY"]
+    if os.environ.get("OBO_CREDENTIAL_MODE"):
+        env_vars["OBO_CREDENTIAL_MODE"] = os.environ["OBO_CREDENTIAL_MODE"]
 
-    # Propagate On-Behalf-Of / Workforce Identity Federation config into the
-    # deployed runtime so the agent can exchange forwarded Entra tokens via STS.
-    for _obo_key in (
-        "WORKFORCE_POOL_ID",
-        "WORKFORCE_PROVIDER_ID",
-        "WORKFORCE_POOL_LOCATION",
-        "WIF_SUBJECT_TOKEN_TYPE",
-        "WIF_SCOPE",
-        "OBO_CREDENTIAL_MODE",
-        "GOOGLE_GENAI_USE_VERTEXAI",
-        "SSL_VERIFY",
-    ):
-        _obo_val = os.environ.get(_obo_key)
-        if _obo_val:
-            env_vars[_obo_key] = _obo_val
-
-    # Deploy config
-    deploy_config = {
-        "display_name": f"{agent_name}_agent",
+    return {
+        "display_name": f"{AGENT_NAME}_agent",
         "description": description,
         "agent_framework": deploy_cfg.get("agent_framework", "google-adk"),
         "staging_bucket": storage,
-        "gcs_dir_name": agent_name,
-        "requirements": all_requirements,
+        "gcs_dir_name": AGENT_NAME,
+        "requirements": requirements,
         "http_options": {"api_version": api_version},
         "max_instances": deploy_cfg.get("max_instances", 1),
         "extra_packages": extra_packages,
         "env_vars": env_vars,
     }
 
-    print(f"  ⏳ Deploying to Agent Engine...")
-    start_time = time.time()
 
-    try:
-        remote_agent = client.agent_engines.create(agent=a2a_agent, config=deploy_config)
-    except Exception as e:
-        print(f"  ✗ Deployment failed: {e}")
-        return False
+# =============================================================================
+# Deploy
+# =============================================================================
 
-    elapsed = time.time() - start_time
-    remote_engine_resource = remote_agent.api_resource.name
-    print(f"  ✓ Deployed: {remote_engine_resource} ({elapsed:.0f}s)")
-
-    agent_authorization = _resolve_agent_authorization(deploy_cfg, project_id, agent_name)
-    return _register_deployed_agent_in_ge(
-        agent_name=agent_name,
-        config=config,
-        remote_engine_resource=remote_engine_resource,
-        agent_authorization=agent_authorization,
-    )
+def _load_executor_class(agent_name: str):
+    module = importlib.import_module(f"agents.{agent_name}.executor")
+    for attr_name in dir(module):
+        attr = getattr(module, attr_name)
+        if isinstance(attr, type) and hasattr(attr, "AGENT_CONFIG_NAME") and attr_name != "BaseA2UIExecutor":
+            return attr
+    return None
 
 
-def _register_deployed_agent_in_ge(
-    *,
-    agent_name: str,
-    config: dict,
-    remote_engine_resource: str,
-    agent_authorization: str | None,
-) -> bool:
-    """Fetch the A2A card from a deployed Reasoning Engine and register in GE."""
+def deploy(dry_run: bool = False, force_recreate_engine: bool = False) -> bool:
+    config = load_agent_config(AGENT_NAME)
+    agent_cfg = config.get("agent", {})
     deploy_cfg = config.get("deploy", {})
+
+    display_name = agent_cfg.get("display_name", AGENT_NAME)
+    skills_cfg = deploy_cfg.get("skills", [])
+    project_id = os.environ["PROJECT_ID"]
     location = deploy_cfg.get("region", os.environ.get("LOCATION", "us-central1"))
-    api_endpoint = f"{location}-aiplatform.googleapis.com"
+    storage = os.environ.get("STORAGE_BUCKET")
     api_version = deploy_cfg.get("api_version", "v1beta1")
 
-    card_url = (
-        f"https://{api_endpoint}/{api_version}/{remote_engine_resource}/a2a/v1/card"
-    )
-    bearer_token = _get_bearer_token()
-    if not bearer_token:
-        print("  ✗ Could not get bearer token for card fetch")
-        return False
+    print(f"  ├── Model: {agent_cfg.get('model', 'default')}")
+    print(f"  ├── Tools: {len(agent_cfg.get('tools', []))}")
+    print(f"  ├── Skills: {len(skills_cfg)}")
 
-    headers = {
-        "Authorization": f"Bearer {bearer_token}",
-        "Content-Type": "application/json",
-    }
+    if dry_run:
+        print(f"  ├── Region: {location}")
+        print(f"  ├── Display Name: {display_name}")
+        existing_engine = deploy_cfg.get("reasoning_engine")
+        if existing_engine:
+            print(f"  ├── Existing engine on file: {existing_engine}")
+            print("  ├── Would attempt: in-place UPDATE (or CREATE if that engine no longer exists)")
+        else:
+            print("  ├── No existing engine on file — would attempt: CREATE (first-time deploy)")
+        print("  └── 🔍 DRY RUN — nothing deployed")
+        return True
+
+    vertexai.init(
+        project=project_id, location=location, staging_bucket=storage,
+        api_endpoint=f"{location}-aiplatform.googleapis.com",
+    )
+    client = vertexai.Client(
+        project=project_id, location=location,
+        http_options=types.HttpOptions(api_version=api_version),
+    )
 
     try:
-        httpx_verify = False if _SSL_VERIFY is False else True
-        response = httpx.get(card_url, headers=headers, verify=httpx_verify, timeout=60)
-        response.raise_for_status()
-        a2ui_agent_card_json = response.json()
+        a2a_agent, _display_name, _description = _build_a2a_agent(config)
+    except RuntimeError as e:
+        print(f"  ✗ {e}")
+        return False
+
+    engine_config = _build_engine_config(config, project_id, api_version, storage)
+
+    existing_engine_raw = deploy_cfg.get("reasoning_engine")
+    existing_engine = (
+        _normalize_engine_resource(existing_engine_raw, project_id, location)
+        if existing_engine_raw else None
+    )
+
+    engine_exists = bool(existing_engine) and _engine_exists(client, existing_engine)
+
+    # -------------------------------------------------------------------
+    # --force-recreate-engine: delete the current engine, then fall through
+    # to the create path below with a mandatory safety wait.
+    # -------------------------------------------------------------------
+    if force_recreate_engine and engine_exists:
+        print(f"  ⚠ --force-recreate-engine: deleting existing engine {existing_engine} ...")
+        try:
+            op = client.agent_engines.delete(name=existing_engine, force=True)
+            _ = op  # deletion is typically synchronous-enough for our purposes
+            print("  ✓ Deleted existing Reasoning Engine")
+        except Exception as e:
+            print(f"  ✗ Failed to delete existing engine: {e}")
+            return False
+        engine_exists = False
+        print(
+            f"  ⏳ Waiting {_RECREATE_SAFETY_WAIT_SECONDS // 60} minutes before "
+            f"provisioning a new engine (eventual-consistency safety margin)..."
+        )
+        time.sleep(_RECREATE_SAFETY_WAIT_SECONDS)
+
+    start = time.time()
+    if engine_exists:
+        # ---------------------------------------------------------------
+        # REDEPLOY: update the SAME Reasoning Engine resource in place.
+        # Resource name / A2A URL never changes -> GE registration/auth
+        # never needs to move.
+        # ---------------------------------------------------------------
+        print(f"  ⏳ Redeploying in place onto existing engine: {existing_engine}")
+        try:
+            remote_agent = client.agent_engines.update(
+                name=existing_engine,
+                agent=a2a_agent,
+                config=engine_config,
+            )
+        except Exception as e:
+            print(f"  ✗ In-place update failed: {e}")
+            return False
+        engine_resource = remote_agent.api_resource.name
+        print(f"  ✓ Updated in place: {engine_resource} ({time.time() - start:.0f}s)")
+    else:
+        # ---------------------------------------------------------------
+        # FIRST-TIME DEPLOY (or recovering from a deleted/missing engine):
+        # create a brand-new Reasoning Engine resource.
+        # ---------------------------------------------------------------
+        if existing_engine_raw:
+            print(f"  ⚠ Recorded engine '{existing_engine_raw}' no longer exists — creating a new one")
+        else:
+            print("  ⏳ No existing engine on file — this is a first-time deploy")
+        print("  ⏳ Creating new Agent Engine resource...")
+        try:
+            remote_agent = client.agent_engines.create(
+                agent=a2a_agent,
+                config=engine_config,
+            )
+        except Exception as e:
+            print(f"  ✗ Deployment failed: {e}")
+            return False
+        engine_resource = remote_agent.api_resource.name
+        print(f"  ✓ Created: {engine_resource} ({time.time() - start:.0f}s)")
+        _persist_reasoning_engine(AGENT_NAME, engine_resource)
+
+    return _register(engine_resource, config)
+
+
+def register_only(reasoning_engine: str) -> bool:
+    config = load_agent_config(AGENT_NAME)
+    deploy_cfg = config.get("deploy", {})
+    location = deploy_cfg.get("region", os.environ.get("LOCATION", "us-central1"))
+
+    if not reasoning_engine.startswith("projects/"):
+        project_id = os.environ["PROJECT_ID"]
+        project_number = _get_project_number(project_id) or project_id
+        reasoning_engine = f"projects/{project_number}/locations/{location}/reasoningEngines/{reasoning_engine}"
+
+    print(f"  ⏳ Registering existing engine: {reasoning_engine}")
+    return _register(reasoning_engine, config)
+
+
+def _register(engine_resource: str, config: dict) -> bool:
+    """Fetch the A2A card from a deployed engine and register/patch it in GE."""
+    agent_cfg = config.get("agent", {})
+    deploy_cfg = config.get("deploy", {})
+    location = deploy_cfg.get("region", os.environ.get("LOCATION", "us-central1"))
+    api_version = deploy_cfg.get("api_version", "v1beta1")
+    api_endpoint = f"{location}-aiplatform.googleapis.com"
+
+    token = _bearer_token()
+    if not token:
+        return False
+    try:
+        resp = httpx.get(
+            f"https://{api_endpoint}/{api_version}/{engine_resource}/a2a/v1/card",
+            headers={"Authorization": f"Bearer {token}"},
+            verify=(_SSL_VERIFY is not False), timeout=60,
+        )
+        resp.raise_for_status()
+        card = resp.json()
     except Exception as e:
         print(f"  ✗ Could not fetch A2A card: {e}")
         return False
 
-    built_card = build_a2ui_agent_card(agent_name)
-    a2ui_agent_card_json["capabilities"] = built_card["capabilities"]
+    card["capabilities"] = build_a2ui_agent_card(AGENT_NAME)["capabilities"]
+    card["url"] = f"https://{api_endpoint}/{api_version}/{engine_resource}/a2a/v1"
+    print(f"  ✓ Agent card A2A URL: {card['url']}")
 
-    ge_registration = deploy_cfg.get("ge_registration", "adk")
-    if ge_registration == "a2a":
-        a2a_rpc_url = (
-            f"https://{api_endpoint}/{api_version}/{remote_engine_resource}/a2a/v1"
-        )
-        a2ui_agent_card_json["url"] = a2a_rpc_url
-        print(f"  ✓ Agent card A2A URL: {a2a_rpc_url}")
-
-    return _register_agent_in_gemini_enterprise(
-        agent_name=agent_name,
-        config=config,
-        a2ui_agent_card_str=json.dumps(a2ui_agent_card_json),
-        agent_authorization=agent_authorization,
-        reasoning_engine=remote_engine_resource,
-        ge_registration=ge_registration,
-    )
-
-
-def register_agent_in_ge(agent_name: str, reasoning_engine: str | None = None) -> bool:
-    """Register an already-deployed Reasoning Engine agent in Gemini Enterprise."""
-    try:
-        config = load_agent_config(agent_name)
-    except FileNotFoundError as e:
-        print(f"  ✗ {e}")
-        return False
-
-    deploy_cfg = config.get("deploy", {})
-    engine = (
-        reasoning_engine
-        or deploy_cfg.get("reasoning_engine")
-        or os.environ.get("REASONING_ENGINE")
-    )
-    if not engine:
-        print("  ✗ No Reasoning Engine resource — pass --reasoning-engine or set deploy.reasoning_engine")
-        return False
-
-    if not engine.startswith("projects/"):
-        project_id = os.environ.get("PROJECT_ID")
-        location = deploy_cfg.get("region", os.environ.get("LOCATION", "us-central1"))
-        engine = f"projects/{_get_project_number(project_id) or project_id}/locations/{location}/reasoningEngines/{engine}"
-
-    print(f"  ⏳ Registering Reasoning Engine in Gemini Enterprise...")
-    print(f"  ├── Engine: {engine}")
-    print(f"  ├── GE registration: {deploy_cfg.get('ge_registration', 'adk')}")
-
-    project_id = os.environ.get("PROJECT_ID")
-    agent_authorization = _resolve_agent_authorization(deploy_cfg, project_id, agent_name)
-    return _register_deployed_agent_in_ge(
-        agent_name=agent_name,
-        config=config,
-        remote_engine_resource=engine,
-        agent_authorization=agent_authorization,
-    )
-
-
-def undeploy_agent(agent_name: str) -> bool:
-    """Undeploy an agent from Agent Engine and unregister from Gemini Enterprise.
-
-    Note: This unregisters from GE. To fully remove the Agent Engine resource,
-    you would need the resource name. Use `gcloud` or the console for that.
-
-    Args:
-        agent_name: Name matching config/<agent_name>.yaml
-
-    Returns:
-        True if successful, False otherwise.
-    """
-    project_id = os.environ.get("PROJECT_ID")
-    app_id = os.environ.get("GEMINI_ENTERPRISE_APP_ID")
-
-    print(f"  ⏳ Unregistering from Gemini Enterprise...")
-
+    project_id = os.environ["PROJECT_ID"]
     ge_location = os.environ.get("GE_LOCATION", "global")
-    success = _unregister_agent_from_gemini_enterprise(
-        project_id=project_id,
-        app_id=app_id,
-        agent_name=f"{agent_name}_agent",
-        ge_location=ge_location,
+    ge = GEClient(project_id, os.environ["GEMINI_ENTERPRISE_APP_ID"], ge_location)
+
+    auth_id = deploy_cfg.get("agent_authorization_id")
+    agent_authorization = None
+    if auth_id:
+        project_number = _get_project_number(project_id)
+        if project_number:
+            agent_authorization = _ensure_auth_resource(auth_id, project_id, project_number, ge_location)
+
+    return _register_or_update(
+        ge,
+        display_name=agent_cfg.get("display_name", AGENT_NAME),
+        description=agent_cfg.get("description", ""),
+        agent_card_json=json.dumps(card),
+        agent_authorization=agent_authorization,
+        access_policy=deploy_cfg.get("ge_access_policy", "ALL_USERS"),
     )
 
-    if success:
-        print(f"  ✓ Unregistered from Gemini Enterprise")
-        print(f"  ℹ To delete the Agent Engine resource, use:")
-        print(f"    gcloud ai reasoning-engines list --region=us-central1")
-        print(f"    gcloud ai reasoning-engines delete <RESOURCE_ID> --region=us-central1")
-    else:
-        print(f"  ✗ Failed to unregister from Gemini Enterprise")
 
-    return success
+def undeploy(delete_engine: bool = False) -> bool:
+    config = load_agent_config(AGENT_NAME)
+    display_name = config.get("agent", {}).get("display_name", AGENT_NAME)
+    deploy_cfg = config.get("deploy", {})
+
+    project_id = os.environ["PROJECT_ID"]
+    ge_location = os.environ.get("GE_LOCATION", "global")
+    ge = GEClient(project_id, os.environ["GEMINI_ENTERPRISE_APP_ID"], ge_location)
+
+    existing = ge.find_agent_by_display_name(display_name)
+    if not existing:
+        print(f"  ℹ No GE registration found for '{display_name}' — nothing to unregister")
+        ok = True
+    else:
+        ge_agent_id = existing.get("name", "").split("/")[-1]
+        print(f"  ⏳ Unregistering '{display_name}' ({ge_agent_id}) from Gemini Enterprise...")
+        ok = ge.delete_agent(ge_agent_id)
+        if ok:
+            print("  ✓ Unregistered from Gemini Enterprise")
+        else:
+            print("  ✗ Failed to unregister from Gemini Enterprise")
+
+    if not delete_engine:
+        engine_resource = deploy_cfg.get("reasoning_engine")
+        print("  ℹ To delete the Agent Engine resource:")
+        if engine_resource:
+            print(f"    python scripts/deploy.py --undeploy --delete-engine")
+            print(f"    (or) gcloud ai reasoning-engines delete {engine_resource.split('/')[-1]} --region={deploy_cfg.get('region', 'us-central1')}")
+        else:
+            print("    gcloud ai reasoning-engines list --region=us-central1")
+            print("    gcloud ai reasoning-engines delete <RESOURCE_ID> --region=us-central1")
+        return ok
+
+    engine_resource_raw = deploy_cfg.get("reasoning_engine")
+    if not engine_resource_raw:
+        print("  ℹ No reasoning_engine recorded in YAML — nothing to delete")
+        return ok
+
+    location = deploy_cfg.get("region", os.environ.get("LOCATION", "us-central1"))
+    api_version = deploy_cfg.get("api_version", "v1beta1")
+    engine_resource = _normalize_engine_resource(engine_resource_raw, project_id, location)
+
+    print(f"  ⏳ Deleting Agent Engine resource: {engine_resource}")
+    try:
+        vertexai.init(project=project_id, location=location, api_endpoint=f"{location}-aiplatform.googleapis.com")
+        client = vertexai.Client(
+            project=project_id, location=location,
+            http_options=types.HttpOptions(api_version=api_version),
+        )
+        client.agent_engines.delete(name=engine_resource, force=True)
+        print("  ✓ Deleted Agent Engine resource")
+    except ClientError as e:
+        if e.code == 404:
+            print("  ℹ Engine already deleted / does not exist")
+        else:
+            print(f"  ✗ Failed to delete engine (HTTP {e.code}): {e}")
+            ok = False
+    except Exception as e:
+        print(f"  ✗ Failed to delete engine: {e}")
+        ok = False
+
+    return ok
+
 
 
 # =============================================================================
@@ -1016,152 +762,38 @@ def undeploy_agent(agent_name: str) -> bool:
 # =============================================================================
 
 def main():
-    load_dotenv(os.path.join(_PROJECT_ROOT, ".env"))
-
-    parser = argparse.ArgumentParser(
-        description="Agent Framework — Deploy agents to Agent Engine + Gemini Enterprise",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  python scripts/deploy.py employee_verification          # Deploy one agent
-  python scripts/deploy.py agent1 agent2 agent3           # Deploy multiple
-  python scripts/deploy.py --all                          # Deploy all agents
-  python scripts/deploy.py --list                         # List available agents
-  python scripts/deploy.py employee_verification --dry-run  # Preview config
-  python scripts/deploy.py employee_verification --undeploy # Undeploy agent
-        """,
-    )
-
-    parser.add_argument(
-        "agents",
-        nargs="*",
-        help="Agent name(s) to deploy (matches config/<name>.yaml)",
-    )
-    parser.add_argument(
-        "--all",
-        action="store_true",
-        help="Deploy all agents found in config/",
-    )
-    parser.add_argument(
-        "--list",
-        action="store_true",
-        help="List available agents and exit",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show what would be deployed without actually deploying",
-    )
-    parser.add_argument(
-        "--undeploy",
-        action="store_true",
-        help="Undeploy the specified agent(s) instead of deploying",
-    )
-    parser.add_argument(
-        "--register-only",
-        action="store_true",
-        help="Skip Agent Engine deploy; register an existing Reasoning Engine in GE",
-    )
-    parser.add_argument(
-        "--reasoning-engine",
-        help="Reasoning Engine resource name or ID (used with --register-only)",
-    )
-
+    parser = argparse.ArgumentParser(description=f"Deploy {AGENT_NAME} to Agent Engine + Gemini Enterprise")
+    parser.add_argument("--dry-run", action="store_true", help="Preview config without deploying")
+    parser.add_argument("--undeploy", action="store_true", help="Unregister from Gemini Enterprise")
+    parser.add_argument("--delete-engine", action="store_true", help="With --undeploy, also delete the Agent Engine resource")
+    parser.add_argument("--force-recreate-engine", action="store_true",
+                         help="Delete the existing Reasoning Engine and create a brand-new one "
+                              "(instead of updating in place). Waits 5 minutes before re-registering.")
+    parser.add_argument("--register-only", action="store_true", help="Skip deploy; register an existing Reasoning Engine")
+    parser.add_argument("--reasoning-engine", help="Reasoning Engine resource name or ID (with --register-only)")
     args = parser.parse_args()
 
-    # --list: show available agents and exit
-    if args.list:
-        available = list_available_agents()
-        print("=" * 60)
-        print("  Agent Framework — Available Agents")
-        print("=" * 60)
-        if not available:
-            print("  No agent configs found in config/")
-        else:
-            for name in available:
-                try:
-                    cfg = load_agent_config(name)
-                    display = cfg.get("agent", {}).get("display_name", name)
-                    model = cfg.get("agent", {}).get("model", "default")
-                    tools = len(cfg.get("agent", {}).get("tools", []))
-                    skills = len(cfg.get("deploy", {}).get("skills", []))
-                    print(f"  • {name}")
-                    print(f"    Display: {display}")
-                    print(f"    Model: {model} | Tools: {tools} | Skills: {skills}")
-                except Exception as e:
-                    print(f"  • {name} (error loading config: {e})")
-        print("=" * 60)
-        return
+    print()
+    print("=" * 70)
+    print(f"  {AGENT_NAME} — {'Undeploy' if args.undeploy else 'Dry Run' if args.dry_run else 'Register' if args.register_only else 'Deploy'}")
+    print("=" * 70)
+    print()
 
-    # Determine which agents to process
-    if args.all:
-        agent_names = list_available_agents()
-        if not agent_names:
-            print("✗ No agent configs found in config/")
+    if args.undeploy:
+        ok = undeploy(delete_engine=args.delete_engine)
+    elif args.register_only:
+        if not args.reasoning_engine:
+            print("✗ --register-only requires --reasoning-engine")
             sys.exit(1)
-    elif args.agents:
-        agent_names = args.agents
+        ok = register_only(args.reasoning_engine)
     else:
-        parser.print_help()
-        sys.exit(1)
-
-    # Validate all agent names first
-    available = list_available_agents()
-    invalid = [name for name in agent_names if name not in available]
-    if invalid:
-        print(f"✗ Unknown agent(s): {', '.join(invalid)}")
-        print(f"  Available: {', '.join(available)}")
-        sys.exit(1)
-
-    # Header
-    project_id = os.environ.get("PROJECT_ID", "?")
-    location = os.environ.get("LOCATION", "us-central1")
-    action = (
-        "Undeploy"
-        if args.undeploy
-        else ("Dry Run" if args.dry_run else ("GE Registration" if args.register_only else "Deployment"))
-    )
+        ok = deploy(dry_run=args.dry_run, force_recreate_engine=args.force_recreate_engine)
 
     print()
-    print("=" * 80)
-    print(f"  Agent Framework — {action}")
-    print(f"  Project: {project_id} | Region: {location}")
-    print("=" * 80)
-    print()
-
-    # Process each agent
-    results = {}
-    total = len(agent_names)
-
-    for idx, agent_name in enumerate(agent_names, 1):
-        print(f"[{idx}/{total}] {'Undeploying' if args.undeploy else 'Registering' if args.register_only else 'Deploying'}: {agent_name}")
-
-        if args.undeploy:
-            success = undeploy_agent(agent_name)
-        elif args.register_only:
-            success = register_agent_in_ge(agent_name, reasoning_engine=args.reasoning_engine)
-        else:
-            success = deploy_agent(agent_name, dry_run=args.dry_run)
-
-        results[agent_name] = success
-        print()
-
-    # Summary
-    succeeded = sum(1 for v in results.values() if v)
-    failed = total - succeeded
-
-    print("=" * 80)
-    if failed == 0:
-        print(f"  ✓ {succeeded}/{total} agents {'processed' if args.dry_run else 'completed'} successfully")
-    else:
-        print(f"  ⚠ {succeeded}/{total} succeeded, {failed}/{total} failed")
-        for name, success in results.items():
-            status = "✓" if success else "✗"
-            print(f"    {status} {name}")
-    print("=" * 80)
-
-    if failed > 0:
-        sys.exit(1)
+    print("=" * 70)
+    print("  ✓ Done" if ok else "  ✗ Failed")
+    print("=" * 70)
+    sys.exit(0 if ok else 1)
 
 
 if __name__ == "__main__":

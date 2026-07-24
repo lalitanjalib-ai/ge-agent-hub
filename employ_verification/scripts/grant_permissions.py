@@ -128,21 +128,26 @@ def main():
         ("roles/serviceusage.serviceUsageConsumer", pool_principal_set),
     ]
 
-    # Optionally scope the same BigQuery access to a single named user.
-
+    # Named user from GE_USER_PERMISSION — grant both Google user IAM (google_direct
+    # OBO) and workforce pool subject IAM (Entra/WIF OBO). No mode switch needed.
     if user_email:
+        google_user = f"user:{user_email}"
         user_principal = (
             f"principal://iam.googleapis.com/locations/{pool_location}/"
             f"workforcePools/{pool_id}/subject/{user_email}"
         )
         required_bindings.extend([
+            # Google user (google_direct OBO and general BQ access)
+            ("roles/bigquery.jobUser", google_user),
+            ("roles/bigquery.dataEditor", google_user),
+            ("roles/serviceusage.serviceUsageConsumer", google_user),
+            # Workforce pool subject (Entra/WIF OBO)
             ("roles/aiplatform.user", user_principal),
             ("roles/aiplatform.viewer", user_principal),
             ("roles/bigquery.dataViewer", user_principal),
             ("roles/bigquery.jobUser", user_principal),
             ("roles/serviceusage.serviceUsageConsumer", user_principal),
-        ])
-    
+        ])    
     print("\nAnalyzing required bindings...")
     modified = False
     
@@ -172,26 +177,25 @@ def main():
                 print(f"  [OK] Already exists: {role} -> {member}")
                 
     if not modified:
-        print("\n[OK] All required permissions are already in place!")
-        sys.exit(0)
-        
-    # 3. Update the IAM policy
-    print(f"\nUpdating IAM policy for project '{project_id}'...")
-    set_url = f"https://cloudresourcemanager.googleapis.com/v1/projects/{project_id}:setIamPolicy"
-    payload = {
-        "policy": {
-            "bindings": bindings,
-            "etag": policy.get("etag")
-        }
-    }
-    
-    set_response = requests.post(set_url, headers=headers, json=payload, verify=_ssl_verify())
-    if set_response.status_code == 200:
-        print("  [✓] IAM policy updated successfully!")
-        print("  [ℹ] Note: It may take 2-3 minutes for Google Cloud to propagate the new permissions.")
+        print("\n[OK] All required project IAM bindings are already in place!")
     else:
-        print(f"  [ERROR] Failed to update IAM policy (HTTP {set_response.status_code}): {set_response.text}")
-        sys.exit(1)
+        print(f"\nUpdating IAM policy for project '{project_id}'...")
+        set_url = f"https://cloudresourcemanager.googleapis.com/v1/projects/{project_id}:setIamPolicy"
+        payload = {
+            "policy": {
+                "bindings": bindings,
+                "etag": policy.get("etag")
+            }
+        }
+
+        set_response = requests.post(set_url, headers=headers, json=payload, verify=_ssl_verify())
+        if set_response.status_code == 200:
+            print("  [OK] Project IAM policy updated successfully!")
+            print("  [i] Note: It may take 2-3 minutes for Google Cloud to propagate the new permissions.")
+        else:
+            print(f"  [ERROR] Failed to update IAM policy (HTTP {set_response.status_code}): {set_response.text}")
+            sys.exit(1)
+
 
 if __name__ == "__main__":
     main()
