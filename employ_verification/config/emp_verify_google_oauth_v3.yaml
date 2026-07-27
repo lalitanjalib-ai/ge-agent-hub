@@ -1,0 +1,182 @@
+# =============================================================================
+# Employee Verification Agent v3 — Google OAuth direct OBO (no STS/WIF)
+# =============================================================================
+# Auth model:
+#   - GE authorization resource uses Google OAuth (accounts.google.com)
+#   - User consents in GE; GE forwards a Google OAuth access token to the agent
+#   - Agent uses that token directly for BigQuery (OBO_CREDENTIAL_MODE=google_direct)
+#   - NO Entra → STS → WIF exchange
+#
+# Prerequisites (.env):
+#   OAUTH_AUTHORIZATION_URI=https://accounts.google.com/o/oauth2/v2/auth
+#   OAUTH_TOKEN_URI=https://oauth2.googleapis.com/token
+#   OAUTH_SCOPES=https://www.googleapis.com/auth/bigquery https://www.googleapis.com/auth/cloud-platform openid email profile
+#   OAUTH_CLIENT_ID=<GCP OAuth 2.0 Web client ID>
+#   OAUTH_CLIENT_SECRET=<client secret>
+#   Redirect URIs on the OAuth client:
+#     https://vertexaisearch.cloud.google.com/oauth-redirect
+#     https://vertexaisearch.cloud.google.com/static/oauth/oauth.html
+#
+# The auth resource is created automatically by deploy.py on first deploy
+# (see deploy.agent_authorization_id below) — no manual setup_agent_auth.py
+# step required for this agent. On redeploys, deploy.py PATCHes the existing
+# GE agent registration in place, so the authorization is never detached.
+#
+# Deploy:
+#   python scripts/deploy.py emp_verify_google_oauth_v3
+
+agent:
+  name: "EmpVerifyGoogleOAuthV3Agent"
+  display_name: "Employee Verification Google OAuth v3"
+  description: >
+    An HR agent that helps employees review, update, and verify their
+    employment records using Google OAuth On-Behalf-Of (no STS). Renders
+    interactive verification forms with editable fields using A2UI.
+
+  tools:
+    - "tools.employee.lookup_employee.lookup_employee"
+    - "tools.employee.update_employee_field.update_employee_field"
+    - "tools.employee.verify_employee.verify_employee"
+
+  prompts:
+
+    role: >
+      You are an Employee Verification Assistant. Your job is to help employees
+      review, update, and verify their employment records. You have access to
+      the company's employee database and can look up records, update allowed
+      fields, and mark records as verified.
+
+      For simple greetings or small talk, respond briefly and ask how you can
+      help with employee verification. Do not call tools unless the user asks
+      about employee records.
+
+    workflow: >
+      You follow this workflow:
+
+      1. EMPLOYEE LOOKUP:
+         - When a user asks to verify their employment, look up their info,
+           or find an employee, you MUST call `lookup_employee` first.
+         - If a single employee is found, display their full verification
+           form with editable fields.
+         - If multiple employees are found, show a list for the user to
+           select from.
+
+      2. EMPLOYEE VERIFICATION FORM:
+         - After looking up an employee, present an A2UI verification form
+           showing read-only and editable fields plus "Submit & Verify" and
+           "Verify As Is" buttons.
+
+      3. HANDLING FORM SUBMISSIONS:
+         - "Submit & Verify": update changed fields, then verify_employee.
+         - "Verify As Is": verify_employee without updates.
+
+      4. HANDLING SELECT FROM LIST:
+         - Call lookup_employee for the selected employee_id and show the form.
+
+      5. CONVERSATIONAL UPDATES:
+         - Use update_employee_field for editable fields only.
+
+      IMPORTANT: Always call `lookup_employee` before showing any employee
+      data. Never make up employee information.
+
+    ui: >
+      You MUST render A2UI components for employee data. Follow these rules:
+
+      - SINGLE employee: verification form with read-only Text fields, editable
+        TextInput fields, and action buttons.
+      - MULTIPLE results: list card with a Verify button per employee.
+      - VERIFICATION SUCCESS: success card with checkCircle icon.
+      - All A2UI JSON MUST be wrapped in `<a2ui-json>` and `</a2ui-json>` tags.
+
+  actions:
+    submit_verification:
+      template: >
+        SUBMIT_VERIFICATION: Employee {employeeId} submitted their
+        verification form. The submitted field values are: {fields}.
+        Compare these with the current database values. For any changed
+        fields, call update_employee_field for each change. Then call
+        verify_employee. Show a verification success card.
+      fields: ["address", "phone", "email", "emergencyContact", "emergencyPhone"]
+
+    verify_as_is:
+      template: >
+        VERIFY_AS_IS: Employee {employeeId} confirmed their information
+        is correct. Call verify_employee with employee_id={employeeId}
+        to mark them as verified. Show a verification success card.
+
+    select_employee:
+      template: >
+        SELECT_EMPLOYEE: User selected employee {employeeName}
+        (ID: {employeeId}). Call lookup_employee with
+        employee_id={employeeId} to get their full record, then display
+        the employee verification form with all their data.
+
+    dismiss_modal:
+      template: >
+        The user dismissed a confirmation dialog. Ask if there's anything
+        else they need.
+
+deploy:
+  deployment_target: agent_engine
+  ge_registration: a2a
+
+  # Reasoning Engine resource — deploy.py's source of truth for whether this
+  # is a first-time deploy (unset / engine missing -> create) or a redeploy
+  # (engine exists -> update() in place, same resource name/A2A URL, so the
+  # GE registration + authorization never need to be detached/reattached).
+  # Auto-updated by deploy.py after a first-time create; also used by
+  # --register-only re-registration.
+  reasoning_engine: projects/901535160018/locations/us-central1/reasoningEngines/1246408030514315264
+
+  # Use Google OAuth access token directly — skip Entra/STS/WIF
+  obo_credential_mode: google_direct
+
+  extra_requirements:
+    - "google-cloud-bigquery>=3.20.0"
+
+  extra_packages:
+    - "agents"
+    - "tools"
+    - "config"
+
+  # Single stable GE OAuth authorization resource. deploy.py now PATCHes the
+  # existing GE agent registration in place on redeploys (instead of
+  # deleting and recreating it), so the authorization is only ever attached
+  # once and never detached/reattached — no blue/green rotation needed.
+  agent_authorization_id: "auth-emp-verify-google-oauth-v3"
+
+  ge_access_policy: "ALL_USERS"
+
+  env_vars:
+    NUM_WORKERS: "1"
+    OBO_CREDENTIAL_MODE: "google_direct"
+
+  skills:
+    - id: "employee-lookup"
+      name: "Employee Lookup"
+      description: "Search and find employee records by name, employee ID, or department."
+      tags: ["employee", "lookup", "search", "hr"]
+      examples:
+        - "Find employee John Smith"
+        - "Look up employee E-1001"
+
+    - id: "employee-update"
+      name: "Employee Field Update"
+      description: "Update editable employee fields like address, phone, email, and emergency contact."
+      tags: ["employee", "update", "edit", "hr"]
+      examples:
+        - "Update my address to 123 Main St"
+
+    - id: "employee-verification"
+      name: "Employee Verification"
+      description: "Verify employee records and mark records as verified."
+      tags: ["employee", "verification", "verify", "hr"]
+      examples:
+        - "Verify my employment"
+
+    - id: "a2ui-ui-rendering"
+      name: "A2UI UI Rendering"
+      description: "Generate rich interactive forms and cards using the A2UI protocol."
+      tags: ["a2ui", "ui", "form", "card"]
+      examples:
+        - "Show my employee verification form"
