@@ -4,38 +4,30 @@ Agent Engine via bring-your-own-Dockerfile mode.
 
 Why BYOC instead of the managed `A2aAgent` template
 ----------------------------------------------------
-The managed `vertexai.preview.reasoning_engines.templates.a2a.A2aAgent`
-template builds and owns the Starlette app internally, which means:
-  (a) its agent-card `url` construction is fixed and (in the version we hit)
-      produced a URL that, once GE appended its own `/v1/message:send` path,
-      resulted in a doubled `/a2a/v1/v1/message:send` 404 — the request never
-      reached the agent at all; and
-  (b) there is no way to attach custom ASGI middleware before the A2A routes
-      are registered, which is required to capture the propagated end-user
-      OAuth token off the raw `Authorization` header.
+The managed `A2aAgent` template builds and owns the Starlette app
+internally, which leaves no way to attach custom ASGI middleware before the
+A2A routes are registered — and capturing the propagated end-user token off
+the raw `Authorization` header requires exactly that. BYOC gives us our own
+Starlette `app` object, so we control the exact routes/URLs and can install
+`TokenExtractorMiddleware` directly.
 
-BYOC gives us our own Starlette `app` object, so both problems go away: we
-control the exact routes/URLs, and we can install `TokenExtractorMiddleware`
-directly.
+How Gemini Enterprise delivers the end-user Entra ID token here
+------------------------------------------------------------------
+This agent is registered with GE at the Agent Engine V2 ingress URL
+(the `.../reasoningEngines/{id}/api/...` pattern) with a Microsoft Entra ID
+authorization resource attached. Per platform fix CL/963035042: GE mints and
+attaches a Discovery Engine P4SA token on `Authorization` (for Google edge
+auth) and places the end-user's Entra JWT on
+`X-Goog-Agent-User-Authorization`. Agent Engine's V2 ingress gateway then
+rewrites `X-Goog-Agent-User-Authorization` onto the standard
+`Authorization: Bearer <Entra_JWT>` header before delivering the request to
+this container.
 
-How Gemini Enterprise delivers the end-user OAuth token here
---------------------------------------------------------------
-Per Google's Agent Engine V2 ingress feature: when this agent is registered
-with GE using the V2 ingress URL pattern
-    https://{LOCATION}-aiplatform.googleapis.com/reasoningEngines/v1/
-    projects/{PROJECT}/locations/{LOCATION}/reasoningEngines/{ENGINE_ID}/api/{ROUTE}
-(note the `/api/` segment — NOT the legacy `/a2a/v1` URL) AND the hosting
-project is on Google's OAuth-propagation allowlist, GE attaches the end
-user's OAuth access token on `X-Goog-Agent-User-Authorization`. Agent
-Engine's own gateway rewrites that onto the standard `Authorization: Bearer
-<token>` header before the request reaches this container. Agent
-Engine/Cloud Run's own IAM-invoker token (if any) rides on a different
-header and is never confused with this.
-
-`TokenExtractorMiddleware` below captures the `Authorization` header into a
-per-request ContextVar (see `employee_agent.token_context`); the employee
-tools then use it directly to build BigQuery credentials — no STS/WIF
-exchange of any kind.
+`TokenExtractorMiddleware` below captures that `Authorization` header into a
+per-request ContextVar (see `employee_agent.token_context`). The BigQuery
+tools then exchange that Entra JWT for a Google federated access token via
+Workforce Identity Federation / RFC 8693 STS (see `employee_agent.entra_wif`
+and `employee_agent.tools.bq_client`) before calling BigQuery.
 """
 
 from __future__ import annotations
@@ -69,10 +61,12 @@ API_PREFIX = "/api"
 
 
 class TokenExtractorMiddleware:
-    """Pure-ASGI middleware: captures `Authorization: Bearer <token>` off the
-    inbound request into a per-request ContextVar, before any A2A/ADK
-    processing begins. See `employee_agent.token_context` for the reader
-    side used by the BigQuery tools.
+    """Pure-ASGI middleware: captures `Authorization: Bearer <Entra_JWT>` off
+    the inbound request (rewritten there by Agent Engine's V2 ingress
+    gateway from `X-Goog-Agent-User-Authorization`) into a per-request
+    ContextVar, before any A2A/ADK processing begins. See
+    `employee_agent.token_context` for the reader side used by the BigQuery
+    tools to perform the Entra->Google WIF/STS exchange.
     """
 
     def __init__(self, app) -> None:
@@ -88,7 +82,7 @@ class TokenExtractorMiddleware:
                     break
         reset = set_user_token(token)
         if token:
-            logger.info("OBO: propagated Authorization header captured on this request.")
+            logger.info("OBO: propagated Entra Authorization header captured on this request.")
         else:
             logger.info("OBO: no Authorization header on this request.")
         try:
@@ -132,8 +126,9 @@ def _build_agent_card() -> AgentCard:
         name="Employee Verification Agent",
         description=(
             "An HR agent that helps employees review, update, and verify "
-            "their employment records, using Gemini Enterprise's built-in "
-            "OAuth token propagation (Agent Engine V2 ingress, no STS/WIF)."
+            "their employment records, using Microsoft Entra ID 3P OAuth "
+            "propagated via Agent Engine V2 ingress and exchanged for "
+            "Google Cloud credentials via Workforce Identity Federation."
         ),
         url="https://placeholder.example.com/api/a2a",
         version="1.0.0",

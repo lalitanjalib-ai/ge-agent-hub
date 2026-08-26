@@ -1,24 +1,25 @@
 [project]
-name = "employee-verification-v5"
-version = "5.0.0"
-description = "Employee Verification agent — A2A/A2UI agent on Vertex AI Agent Engine (BYOC), using Gemini Enterprise's built-in OAuth token propagation (Agent Engine V2 ingress, no STS/WIF)."
+name = "employee-verification"
+version = "6.0.0"
+description = "Employee Verification agent — A2A agent on Vertex AI Agent Engine (BYOC), using Microsoft Entra ID 3P OAuth propagated via Agent Engine V2 ingress and exchanged for Google Cloud credentials via Workforce Identity Federation (RFC 8693 STS)."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "a2a-sdk[http-server]>=0.3.4,<1.0.0",
-    "google-cloud-aiplatform[agent_engines,adk]>=1.144.0",
     "google-adk>=2.5.0",
-    "a2ui-agent-sdk>=0.1.2",
-    "google-cloud-bigquery>=3.20.0",
-    "python-dotenv>=1.1.0",
-    "pyyaml>=6.0",
-    "httpx>=0.27.0",
-    "requests>=2.31.0",
+    "google-cloud-bigquery>=3.25.0",
+    "google-auth>=2.30.0",
     "fastapi>=0.115.0",
+    "starlette>=0.38.0",
     "uvicorn>=0.30.0",
-    "starlette",
-    "sse-starlette",
+    "requests>=2.32.0",
+    "pydantic>=2.8.0",
+    "python-dotenv>=1.0.0",
+    # Local deployment tooling only (scripts/deploy.py) — not required by
+    # the deployed container itself.
+    "google-cloud-aiplatform[agent_engines,adk]>=1.144.0",
 ]
 
 [tool.uv]
 native-tls = true
+

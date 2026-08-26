@@ -1,14 +1,16 @@
 """
-Employee Verification Agent — BYOC A2A, built-in OAuth propagation (v5).
+Employee Verification Agent — BYOC A2A with Microsoft Entra ID 3P OAuth.
 
 Auth model: this agent is deployed via Vertex AI Agent Engine's
-Bring-Your-Own-Dockerfile (BYOC) mode and registered with Gemini Enterprise at
-the Agent Engine V2 ingress URL. If the hosting project is on the
-OAuth-propagation allowlist, GE attaches the end user's OAuth access token,
-Agent Engine's gateway rewrites it onto the standard Authorization header,
-and `main.py`'s TokenExtractorMiddleware captures it per-request. Tools read
-it via `employee_agent.token_context.get_user_token()` and use it directly
-for BigQuery — no STS/WIF exchange, no multi-location scanning.
+Bring-Your-Own-Dockerfile (BYOC) mode and registered with Gemini Enterprise
+at the Agent Engine V2 ingress URL with a Microsoft Entra ID authorization
+resource attached. GE forwards the end user's Entra JWT on
+`X-Goog-Agent-User-Authorization`; Agent Engine's V2 ingress gateway rewrites
+it onto the standard `Authorization` header, and `main.py`'s
+TokenExtractorMiddleware captures it per-request. Tools read it via
+`employee_agent.token_context.get_user_token()` and exchange it for a Google
+federated access token via Workforce Identity Federation / RFC 8693 STS
+(see `employee_agent.entra_wif`) before calling BigQuery.
 """
 
 from __future__ import annotations
@@ -134,8 +136,8 @@ def create_agent() -> Agent:
         description=(
             "An HR agent that helps employees review, update, and verify "
             "their employment records. BigQuery calls run as the logged-in "
-            "Gemini Enterprise user via propagated Google OAuth (BYOC Agent "
-            "Engine V2 ingress), when available."
+            "Gemini Enterprise (Microsoft Entra ID) user via Workforce "
+            "Identity Federation, when available."
         ),
         instruction=instruction,
         tools=[lookup_employee, update_employee_field, verify_employee],

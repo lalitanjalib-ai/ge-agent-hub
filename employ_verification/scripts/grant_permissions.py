@@ -1,11 +1,16 @@
 """
-Employee Verification v5 — Grant IAM Permissions Helper
+Employee Verification — Grant IAM Permissions Helper
 
-Grants the minimum IAM roles needed for:
-  1. The Reasoning Engine's own service account (ADC fallback path, and to
-     invoke Vertex AI APIs) to run BigQuery jobs on the fallback path.
+Grants the minimum project-level IAM roles needed for:
+  1. The Reasoning Engine's own service account (ADC fallback path, used
+     when no Entra token is propagated) to run BigQuery jobs.
   2. The Discovery Engine (Gemini Enterprise) service agent to invoke the
      Agent Engine resource.
+
+NOTE: this script does NOT configure Workforce Identity Federation. The WIF
+pool/provider and its `principalSet` IAM bindings (roles/bigquery.dataViewer,
+roles/bigquery.jobUser, roles/serviceusage.serviceUsageConsumer) must be set
+up separately — see README.md.
 
 Usage:
     python scripts/grant_permissions.py
@@ -86,7 +91,7 @@ def _ensure_binding(policy: dict, role: str, member: str) -> bool:
 def main() -> None:
     print()
     print("=" * 80)
-    print(f"  Employee Verification v5 — Grant IAM Permissions Helper")
+    print(f"  Employee Verification — Grant IAM Permissions Helper")
     print(f"  Project: {PROJECT_ID}")
     print("=" * 80)
     print()

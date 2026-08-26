@@ -1,14 +1,14 @@
 """
-Employee Verification v5 — Agent Authorization Setup Script
+Employee Verification — Agent Authorization Setup Script (Microsoft Entra ID)
 
-Creates (or verifies) the Gemini Enterprise agent_authorization resource
-needed for OAuth propagation. Normally handled automatically by
+Creates (or verifies) the Gemini Enterprise agent_authorization resource for
+Microsoft Entra ID 3P OAuth propagation. Normally handled automatically by
 scripts/deploy.py on first deploy — run this manually only when you need to
 force-recreate it.
 
-The authorization resource allows Gemini Enterprise to run the OAuth consent
-flow and mint the end-user token that Agent Engine's V2 ingress later
-propagates to this agent's Authorization header.
+The authorization resource allows Gemini Enterprise to run the Entra ID
+OAuth consent flow and mint the end-user Entra JWT that Agent Engine's V2
+ingress later rewrites onto this agent's Authorization header.
 
 Usage:
     python scripts/setup_agent_auth.py
@@ -17,11 +17,12 @@ Usage:
     python scripts/setup_agent_auth.py --id my-auth-id
 
 Prerequisites:
-    1. Set OAUTH_CLIENT_ID and OAUTH_CLIENT_SECRET in .env.
-    2. The OAuth client must have these redirect URIs configured:
-         https://vertexaisearch.cloud.google.com/oauth-redirect
+    1. Set ENTRA_TENANT_ID, OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET, and
+       ENTRA_APP_ID (or ENTRA_SCOPE) in .env.
+    2. The Entra app registration must have this redirect URI configured:
          https://vertexaisearch.cloud.google.com/static/oauth/oauth.html
-    3. Set GE_LOCATION in .env to match where your GE app was provisioned.
+    3. The authorization resource is always created in the Discovery Engine
+       `global` location, regardless of GE_LOCATION.
 """
 
 from __future__ import annotations
@@ -54,8 +55,10 @@ elif os.environ.get("REQUESTS_CA_BUNDLE"):
 
 
 def _auth_location() -> str:
-    loc = os.environ.get("GE_LOCATION", "global").strip().lower()
-    return loc if loc in ("global", "us", "eu") else "global"
+    # The Entra ID authorization resource must live in the Discovery Engine
+    # `global` location regardless of where the GE app itself was
+    # provisioned (GE_LOCATION only affects the agent registration below).
+    return "global"
 
 
 def _auth_de_hostname(auth_location: str) -> str:
@@ -132,29 +135,33 @@ def _create_auth(
         f"locations/{auth_location}/authorizations?authorizationId={auth_id}"
     )
 
-    auth_base_uri = os.environ.get(
-        "OAUTH_AUTHORIZATION_URI", "https://accounts.google.com/o/oauth2/v2/auth"
-    ).strip('"')
-    token_uri = os.environ.get("OAUTH_TOKEN_URI", "https://oauth2.googleapis.com/token").strip('"')
-    scopes = os.environ.get(
-        "OAUTH_SCOPES",
-        "openid https://www.googleapis.com/auth/userinfo.email "
-        "https://www.googleapis.com/auth/userinfo.profile "
-        "https://www.googleapis.com/auth/bigquery "
-        "https://www.googleapis.com/auth/cloud-platform",
-    ).strip('"')
+    tenant_id = os.environ.get("ENTRA_TENANT_ID", "").strip()
+    if not tenant_id:
+        print("  ✗ ENTRA_TENANT_ID is not set in .env")
+        return None
 
-    redirect_uri = "https%3A%2F%2Fvertexaisearch.cloud.google.com%2Fstatic%2Foauth%2Foauth.html"
-    encoded_scopes = urllib.parse.quote(scopes)
+    entra_app_id = os.environ.get("ENTRA_APP_ID", "").strip()
+    scope = os.environ.get("ENTRA_SCOPE", "").strip()
+    if not scope:
+        if not entra_app_id:
+            print("  ✗ Neither ENTRA_APP_ID nor ENTRA_SCOPE is set in .env")
+            return None
+        scope = f"openid offline_access api://{entra_app_id}/access_as_user"
+
+    token_uri = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
+    auth_base_uri = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/authorize"
+    redirect_uri = urllib.parse.quote(
+        "https://vertexaisearch.cloud.google.com/static/oauth/oauth.html", safe=""
+    )
+    encoded_scope = urllib.parse.quote(scope, safe="")
 
     authorization_uri = (
         f"{auth_base_uri}"
         f"?client_id={oauth_client_id}"
-        f"&redirect_uri={redirect_uri}"
-        f"&scope={encoded_scopes}"
-        f"&include_granted_scopes=true"
         f"&response_type=code"
-        f"&access_type=offline"
+        f"&redirect_uri={redirect_uri}"
+        f"&scope={encoded_scope}"
+        f"&response_mode=query"
         f"&prompt=consent"
     )
 
@@ -187,7 +194,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Create/verify the GE agent_authorization resource")
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--force", action="store_true")
-    parser.add_argument("--id", default="auth-emp-verify-v5", dest="auth_id")
+    parser.add_argument("--id", default=os.environ.get("AUTH_ID", "auth-emp-verify"), dest="auth_id")
     args = parser.parse_args()
 
     project_id = os.environ.get("PROJECT_ID")
@@ -196,11 +203,11 @@ def main() -> None:
 
     print()
     print("=" * 70)
-    print("  Employee Verification v5 — Agent Authorization Setup")
+    print("  Employee Verification — Agent Authorization Setup (Entra ID)")
     print("=" * 70)
-    print(f"  Project ID:  {project_id}")
-    print(f"  GE Location: {os.environ.get('GE_LOCATION', 'global')}")
-    print(f"  Auth ID:     {args.auth_id}")
+    print(f"  Project ID:   {project_id}")
+    print(f"  Entra Tenant: {os.environ.get('ENTRA_TENANT_ID', '<unset>')}")
+    print(f"  Auth ID:      {args.auth_id}")
     print("=" * 70)
     print()
 

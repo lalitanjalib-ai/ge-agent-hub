@@ -1,20 +1,17 @@
 """
-Deploy the Employee Verification agent (v5) to Vertex AI Agent Engine using
+Deploy the Employee Verification agent to Vertex AI Agent Engine using
 Bring-Your-Own-Dockerfile (BYOC) mode, and register it with Gemini Enterprise
-at the Agent Engine V2 ingress URL — the URL pattern required for GE to
-propagate the end user's OAuth token onto the standard Authorization header
-that `main.py`'s TokenExtractorMiddleware reads.
+at the Agent Engine V2 ingress URL with a Microsoft Entra ID authorization
+resource attached.
 
     V2 ingress URL pattern (what gets registered with GE):
         https://{LOCATION}-aiplatform.googleapis.com/reasoningEngines/v1/
         projects/{PROJECT}/locations/{LOCATION}/reasoningEngines/{ENGINE_ID}/api/a2a/
 
-    NOTE: this is intentionally different from the legacy
-    ".../reasoningEngines/{id}/a2a/v1" URL used by the managed A2aAgent
-    template in the v3/v4 branches — that URL does not receive the
-    propagated token, and registering it caused agent-card `url`
-    construction bugs (a doubled "/v1/v1/message:send" 404) that we hit
-    previously.
+    NOTE: this must be the V2 `/api/...` URL, not a legacy `/a2a/v1` URL —
+    only the V2 ingress gateway rewrites `X-Goog-Agent-User-Authorization`
+    (the Entra JWT) onto the standard `Authorization` header before the
+    request reaches this container (see main.py).
 
 Usage:
     python scripts/deploy.py                 # first deploy or in-place redeploy
@@ -22,6 +19,7 @@ Usage:
     python scripts/deploy.py --undeploy
     python scripts/deploy.py --undeploy --delete-engine
     python scripts/deploy.py --register-only --reasoning-engine <ID_OR_FULL_NAME>
+    python scripts/deploy.py --force-recreate-engine
 """
 
 from __future__ import annotations
@@ -63,7 +61,7 @@ from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.genai import types
 from google.genai.errors import ClientError
 
-AGENT_NAME = "employee_verification_v5"
+AGENT_NAME = "employee_verification"
 CONFIG_FILE = _PROJECT_ROOT / "scripts" / "deploy_state.json"
 
 # Conservative safety wait after a destructive engine recreate, matching
@@ -322,6 +320,8 @@ def _byoc_config(display_name: str, description: str) -> dict:
             "GOOGLE_GENAI_USE_VERTEXAI": "1",
             "PROJECT_ID": os.environ["PROJECT_ID"],
             "GOOGLE_GENAI_MODEL": os.environ.get("GOOGLE_GENAI_MODEL", "gemini-2.5-flash"),
+            "WIF_PROVIDER_RESOURCE": os.environ.get("WIF_PROVIDER_RESOURCE", ""),
+            "STRICT_OBO": os.environ.get("STRICT_OBO", "false"),
         },
         "resource_limits": {"cpu": "2", "memory": "4Gi"},
         "max_instances": 3,
@@ -332,11 +332,12 @@ def deploy(dry_run: bool = False, force_recreate_engine: bool = False) -> bool:
     project_id = os.environ["PROJECT_ID"]
     location = os.environ.get("LOCATION", "us-central1")
     storage = os.environ.get("STORAGE_BUCKET")
-    display_name = "Employee Verification Agent (v5)"
+    display_name = "Employee Verification Agent"
     description = (
         "An HR agent that helps employees review, update, and verify their "
-        "employment records, using Gemini Enterprise's built-in OAuth token "
-        "propagation (Agent Engine V2 ingress)."
+        "employment records, using Microsoft Entra ID 3P OAuth propagated "
+        "via Agent Engine V2 ingress and exchanged for Google Cloud "
+        "credentials via Workforce Identity Federation."
     )
 
     state = _load_state()
@@ -415,7 +416,7 @@ def register_only(reasoning_engine: str) -> bool:
     print(f"  ⏳ Registering existing engine: {reasoning_engine}")
     return _register(
         reasoning_engine,
-        "Employee Verification Agent (v5)",
+        "Employee Verification Agent",
         "An HR agent that helps employees review, update, and verify their employment records.",
     )
 
@@ -475,7 +476,7 @@ def _register(engine_resource: str, display_name: str, description: str) -> bool
     ge_location = os.environ.get("GE_LOCATION", "global")
     ge = GEClient(project_id, os.environ["GEMINI_ENTERPRISE_APP_ID"], ge_location)
 
-    auth_id = os.environ.get("AUTH_ID", "auth-emp-verify-v5")
+    auth_id = os.environ.get("AUTH_ID", "auth-emp-verify")
     agent_authorization = None
     project_number = _get_project_number(project_id)
     if project_number:
@@ -492,7 +493,7 @@ def _register(engine_resource: str, display_name: str, description: str) -> bool
 
 
 def undeploy(delete_engine: bool = False) -> bool:
-    display_name = "Employee Verification Agent (v5)"
+    display_name = "Employee Verification Agent"
     project_id = os.environ["PROJECT_ID"]
     ge_location = os.environ.get("GE_LOCATION", "global")
     ge = GEClient(project_id, os.environ["GEMINI_ENTERPRISE_APP_ID"], ge_location)
