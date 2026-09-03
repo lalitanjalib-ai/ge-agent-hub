@@ -5,3 +5,7 @@ __pycache__/
 .DS_Store
 uv.lock
 notes.txt
+
+# Local deploy runtime artifacts (environment-specific, not source)
+deploy_output.log
+scripts/deploy_state.json

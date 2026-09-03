@@ -39,15 +39,23 @@ from a2a.server.apps.jsonrpc.starlette_app import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore
 from a2a.types import AgentCapabilities, AgentCard, AgentSkill
-from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutor
 from google.adk.artifacts import InMemoryArtifactService
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 
+from employee_agent.a2ui_executor import A2uiAwareExecutor
 from employee_agent.agent import root_agent
 from employee_agent.token_context import reset_user_token, set_user_token
+
+try:
+    from a2ui.a2a.extension import get_a2ui_agent_extension
+    from a2ui.schema.constants import VERSION_0_8
+
+    _A2UI_EXTENSION = get_a2ui_agent_extension(version=VERSION_0_8)
+except ImportError:  # pragma: no cover - a2ui is an optional dependency
+    _A2UI_EXTENSION = None
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("main")
@@ -134,7 +142,10 @@ def _build_agent_card() -> AgentCard:
         version="1.0.0",
         default_input_modes=["text/plain"],
         default_output_modes=["text/plain"],
-        capabilities=AgentCapabilities(streaming=False),
+        capabilities=AgentCapabilities(
+            streaming=False,
+            extensions=[_A2UI_EXTENSION] if _A2UI_EXTENSION else None,
+        ),
         skills=skills,
         supports_authenticated_extended_card=False,
     )
@@ -149,7 +160,7 @@ def build_app() -> Starlette:
     )
     agent_card = _build_agent_card()
     request_handler = DefaultRequestHandler(
-        agent_executor=A2aAgentExecutor(runner=runner),
+        agent_executor=A2uiAwareExecutor(runner=runner),
         task_store=InMemoryTaskStore(),
     )
 
@@ -166,15 +177,19 @@ def build_app() -> Starlette:
     async def healthz(_request):
         return JSONResponse({"status": "ok"})
 
-    root = Starlette(routes=[])
-    root.mount("/a2a", app=a2a_app)
-    root.add_route("/healthz", healthz, methods=["GET"])
+    # Agent Engine V2 ingress strips the `/api` prefix from external URLs like
+    # `.../reasoningEngines/{id}/api/a2a/` before forwarding to this container,
+    # so deployed traffic arrives as `/a2a/...`. Mount A2A at `/a2a` on the
+    # outer app for production, and also under `/api/a2a` for local uvicorn
+    # testing (README curl examples use the full external path shape).
+    api_root = Starlette(routes=[])
+    api_root.mount("/a2a", app=a2a_app)
+    api_root.add_route("/healthz", healthz, methods=["GET"])
 
     outer = Starlette(routes=[])
-    outer.mount(API_PREFIX, app=root)
-    # Also expose a plain, unprefixed health check for platform liveness
-    # probes that may not know about API_PREFIX.
+    outer.mount("/a2a", app=a2a_app)
     outer.add_route("/healthz", healthz, methods=["GET"])
+    outer.mount("/api", app=api_root)
 
     outer.add_middleware(TokenExtractorMiddleware)
     return outer

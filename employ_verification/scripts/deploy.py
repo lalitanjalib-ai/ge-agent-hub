@@ -53,6 +53,21 @@ if _SSL_VERIFY is False:
     ssl._create_default_https_context = ssl._create_unverified_context  # type: ignore[attr-defined]
     import urllib3
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    # google.genai / vertexai uses httpx, which ignores ssl._create_default_https_context
+    import httpx
+    _orig_httpx_client_init = httpx.Client.__init__
+    _orig_httpx_async_init = httpx.AsyncClient.__init__
+
+    def _httpx_client_init(self, *args, **kwargs):
+        kwargs.setdefault("verify", False)
+        return _orig_httpx_client_init(self, *args, **kwargs)
+
+    def _httpx_async_init(self, *args, **kwargs):
+        kwargs.setdefault("verify", False)
+        return _orig_httpx_async_init(self, *args, **kwargs)
+
+    httpx.Client.__init__ = _httpx_client_init  # type: ignore[method-assign]
+    httpx.AsyncClient.__init__ = _httpx_async_init  # type: ignore[method-assign]
 
 import requests
 import vertexai
@@ -236,34 +251,53 @@ def _register_or_update(
     agent_authorization: str | None,
     access_policy: str,
 ) -> bool:
-    payload = {
+    """Register with GE using a2aAgentDefinition + the Agent Engine V2 ingress
+    URL (see module docstring). This is required — NOT adkAgentDefinition +
+    provisionedReasoningEngine — because this container is a fully custom BYOC
+    Starlette app that only implements the bespoke `/a2a` routes built by
+    main.py; adkAgentDefinition instead makes GE call Discovery Engine's
+    internal `/api/stream_reasoning_engine` contract, which this container
+    does not implement and 404s on (surfaces as REMOTE_AGENT_FAILURE /
+    NOT_FOUND in the chat widget).
+    """
+    payload: dict = {
         "displayName": display_name,
         "description": description,
         "a2aAgentDefinition": {"jsonAgentCard": agent_card_json},
     }
+    if agent_authorization:
+        # `agentAuthorization` (singular) is required to invoke the agent —
+        # Discovery Engine passes its token on the request Authorization
+        # header, which is exactly what main.py's TokenExtractorMiddleware
+        # reads. `toolAuthorizations` (plural) instead passes tokens in the
+        # request BODY for the agent's own downstream tool calls, and does
+        # NOT satisfy the edge auth needed to invoke the A2A URL itself —
+        # using it here causes a 401 Unauthorized when GE calls
+        # .../reasoningEngines/.../api/a2a/.
+        payload["authorizationConfig"] = {"agentAuthorization": agent_authorization}
+
     existing = ge.find_agent_by_display_name(display_name)
+
+    if existing and existing.get("adkAgentDefinition"):
+        old_id = existing.get("name", "").split("/")[-1]
+        print(f"  ⚠ Recreating GE agent '{old_id}' (switching adk -> a2a registration)...")
+        if not ge.delete_agent(old_id):
+            print("  ✗ Failed to delete old adkAgentDefinition registration")
+            return False
+        existing = None
 
     if existing:
         existing_id = existing.get("name", "").split("/")[-1]
         update_mask = ["displayName", "description", "a2aAgentDefinition"]
-        existing_auth = (
-            existing.get("authorizationConfig", {}).get("agentAuthorization")
-            or existing.get("authorization_config", {}).get("agent_authorization")
-        )
-        if agent_authorization and not existing_auth:
-            print(f"  ⚠ Existing GE agent has no authorization attached — attaching '{agent_authorization}' now")
-            payload["authorization_config"] = {"agent_authorization": agent_authorization}
-            update_mask.append("authorization_config")
-
+        if agent_authorization:
+            update_mask.append("authorizationConfig")
         print(f"  ⏳ Updating existing GE registration '{existing_id}' in place...")
         result = ge.patch_agent(existing_id, payload, update_mask=update_mask)
         if not result:
             return False
-        print("  ✓ Updated Gemini Enterprise registration (in place — auth resource untouched)")
+        print("  ✓ Updated Gemini Enterprise registration (a2aAgentDefinition)")
     else:
-        print(f"  ⏳ Registering '{display_name}' in Gemini Enterprise (first-time registration)...")
-        if agent_authorization:
-            payload["authorization_config"] = {"agent_authorization": agent_authorization}
+        print(f"  ⏳ Registering '{display_name}' in Gemini Enterprise (a2aAgentDefinition)...")
         result = ge.create_agent(payload)
         if not result:
             return False
@@ -299,6 +333,15 @@ def _normalize_engine_resource(value: str, project_id: str, location: str) -> st
     return f"projects/{project_id}/locations/{location}/reasoningEngines/{value}"
 
 
+def _engine_matches_project(engine_resource: str, project_id: str) -> bool:
+    """Ignore deploy_state from a different GCP project."""
+    project_number = _get_project_number(project_id)
+    if not project_number:
+        # Credentials unavailable — keep existing state rather than discarding it.
+        return True
+    return f"projects/{project_number}/" in engine_resource
+
+
 def _byoc_config(display_name: str, description: str) -> dict:
     """BYOC config: source_packages + image_spec, per Google's Agent Engine
     V2 ingress notebook. entrypoint_module/entrypoint_object are required
@@ -309,10 +352,10 @@ def _byoc_config(display_name: str, description: str) -> dict:
         "display_name": display_name,
         "description": description,
         "source_packages": [
-            str(_PROJECT_ROOT / "employee_agent"),
-            str(_PROJECT_ROOT / "main.py"),
-            str(_PROJECT_ROOT / "requirements.txt"),
-            str(_PROJECT_ROOT / "Dockerfile"),
+            "employee_agent",
+            "main.py",
+            "requirements.txt",
+            "Dockerfile",
         ],
         "image_spec": {},
         "agent_framework": "google-adk",
@@ -322,6 +365,10 @@ def _byoc_config(display_name: str, description: str) -> dict:
             "GOOGLE_GENAI_MODEL": os.environ.get("GOOGLE_GENAI_MODEL", "gemini-2.5-flash"),
             "WIF_PROVIDER_RESOURCE": os.environ.get("WIF_PROVIDER_RESOURCE", ""),
             "STRICT_OBO": os.environ.get("STRICT_OBO", "false"),
+            # Required for GE -> Agent Engine V2 ingress: GE attaches a
+            # Discovery Engine P4SA token on Authorization for Google edge
+            # auth; without this, Context-Aware Access rejects it with 401.
+            "GOOGLE_API_PREVENT_AGENT_TOKEN_SHARING_FOR_GCP_SERVICES": "False",
         },
         "resource_limits": {"cpu": "2", "memory": "4Gi"},
         "max_instances": 3,
@@ -342,6 +389,9 @@ def deploy(dry_run: bool = False, force_recreate_engine: bool = False) -> bool:
 
     state = _load_state()
     existing_engine_raw = state.get("reasoning_engine")
+    if existing_engine_raw and not _engine_matches_project(existing_engine_raw, project_id):
+        print(f"  ⚠ Ignoring deploy_state engine from another project: {existing_engine_raw}")
+        existing_engine_raw = None
 
     print(f"  ├── Deployment mode: BYOC (source_packages + image_spec)")
     print(f"  ├── Region: {location}")
@@ -404,7 +454,31 @@ def deploy(dry_run: bool = False, force_recreate_engine: bool = False) -> bool:
         state["reasoning_engine"] = engine_resource
         _save_state(state)
 
+    _ensure_engine_invoker_iam(engine_resource)
     return _register(engine_resource, display_name, description)
+
+
+def _ensure_engine_invoker_iam(engine_resource: str) -> None:
+    """Grant GE's Discovery Engine SA invoke rights on this engine resource."""
+    from scripts.grant_permissions import _ensure_engine_invoker
+
+    project_id = os.environ["PROJECT_ID"]
+    location = os.environ.get("LOCATION", "us-central1")
+    project_number = _get_project_number(project_id)
+    token = _bearer_token()
+    if not (project_number and token):
+        print("  ⚠ Skipping engine IAM check — run: python scripts/grant_permissions.py")
+        return
+    discoveryengine_sa = f"serviceAccount:service-{project_number}@gcp-sa-discoveryengine.iam.gserviceaccount.com"
+    print("  ⏳ Ensuring Discovery Engine can invoke this Reasoning Engine...")
+    try:
+        if _ensure_engine_invoker(engine_resource, token, location, discoveryengine_sa):
+            print("  ✓ Engine-level IAM updated (GE -> V2 ingress)")
+        else:
+            print("  ✓ Engine-level IAM already configured")
+    except Exception as e:
+        print(f"  ⚠ Engine IAM setup failed: {e}")
+        print("    Run: python scripts/grant_permissions.py")
 
 
 def register_only(reasoning_engine: str) -> bool:
@@ -414,6 +488,7 @@ def register_only(reasoning_engine: str) -> bool:
         project_number = _get_project_number(project_id) or project_id
         reasoning_engine = f"projects/{project_number}/locations/{location}/reasoningEngines/{reasoning_engine}"
     print(f"  ⏳ Registering existing engine: {reasoning_engine}")
+    _ensure_engine_invoker_iam(reasoning_engine)
     return _register(
         reasoning_engine,
         "Employee Verification Agent",
@@ -424,19 +499,19 @@ def register_only(reasoning_engine: str) -> bool:
 def _register(engine_resource: str, display_name: str, description: str) -> bool:
     """Register with GE at the Agent Engine V2 ingress URL. This is the URL
     pattern (with the `/api/` segment) required for GE to propagate the
-    end-user OAuth token — NOT the legacy `/a2a/v1` URL.
+    end-user OAuth token — NOT the legacy `/a2a/v1` URL, and NOT
+    adkAgentDefinition/provisionedReasoningEngine (see _register_or_update).
     """
     project_id = os.environ["PROJECT_ID"]
     location = os.environ.get("LOCATION", "us-central1")
 
     # engine_resource looks like:
     #   projects/{PROJECT_NUM}/locations/{LOCATION}/reasoningEngines/{ID}
-    engine_id = engine_resource.rstrip("/").split("/")[-1]
-
     v2_ingress_url = (
         f"https://{location}-aiplatform.googleapis.com/reasoningEngines/v1/"
         f"{engine_resource}/api/a2a/"
     )
+    print(f"  ✓ Reasoning Engine: {engine_resource}")
     print(f"  ✓ Agent Engine V2 ingress URL: {v2_ingress_url}")
 
     agent_card = {

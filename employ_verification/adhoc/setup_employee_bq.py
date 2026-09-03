@@ -19,6 +19,24 @@ if str(_PROJECT_ROOT) not in sys.path:
 from dotenv import load_dotenv
 load_dotenv(_PROJECT_ROOT / ".env", override=True)
 
+if os.environ.get("SSL_VERIFY", "").strip().lower() in ("false", "0", "no"):
+    import ssl
+    ssl._create_default_https_context = ssl._create_unverified_context  # type: ignore[attr-defined]
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    # google-cloud-bigquery uses google.auth.transport.requests.AuthorizedSession
+    # (built on requests.Session), which ignores ssl._create_default_https_context
+    # and always verifies against certifi's bundle — same corp-proxy issue
+    # deploy.py works around for httpx. Patch requests.Session directly too.
+    import requests
+    _orig_session_request = requests.Session.request
+
+    def _session_request(self, *args, **kwargs):
+        kwargs.setdefault("verify", False)
+        return _orig_session_request(self, *args, **kwargs)
+
+    requests.Session.request = _session_request  # type: ignore[method-assign]
+
 from google.cloud import bigquery
 
 PROJECT_ID = os.environ.get("PROJECT_ID")

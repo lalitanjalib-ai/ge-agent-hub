@@ -38,9 +38,16 @@ STS)** before any BigQuery call.
    - Redirect URI: `https://vertexaisearch.cloud.google.com/static/oauth/oauth.html`
    - An exposed API scope, e.g. `api://{ENTRA_APP_ID}/access_as_user`
 3. A **Workforce Identity Federation pool + provider** configured to trust
-   your Entra tenant as an OIDC issuer, with IAM bindings granting the
-   workforce pool's `principalSet` `roles/bigquery.dataViewer`,
-   `roles/bigquery.jobUser`, and `roles/serviceusage.serviceUsageConsumer`.
+   your Entra tenant as an OIDC issuer (this must be created manually — see
+   Google's WIF setup docs). Its `principalSet` IAM bindings
+   (`roles/bigquery.dataEditor`, `roles/bigquery.jobUser`,
+   `roles/serviceusage.serviceUsageConsumer` — dataEditor because
+   update_employee_field/verify_employee run UPDATE DML) are granted
+   automatically by `scripts/grant_permissions.py` below, derived from
+   `WIF_PROVIDER_RESOURCE`.
+4. The **BigQuery API** must be enabled on `PROJECT_ID`
+   (`gcloud services enable bigquery.googleapis.com`) before running
+   `adhoc/setup_employee_bq.py`.
 
 ## Setup
 
@@ -53,7 +60,7 @@ cp .env.example .env
 pip install -r requirements.txt
 
 python adhoc/setup_employee_bq.py     # creates + seeds the BigQuery table
-python scripts/grant_permissions.py   # grants IAM to service accounts
+python scripts/grant_permissions.py   # grants IAM to service accounts + WIF principalSet
 ```
 
 ## Deploy
@@ -103,6 +110,25 @@ Credentials — this is expected and logged.
 ```bash
 PROJECT_NUM=$(gcloud projects describe prj-us-bpg-agentspace-dev-b --format='value(projectNumber)')
 gcloud projects add-iam-policy-binding prj-us-bpg-agentspace-dev-b \
+  --member="serviceAccount:service-${PROJECT_NUM}@gcp-sa-discoveryengine.iam.gserviceaccount.com" \
+  --role="roles/aiplatform.user"
+```
+
+Also ensure the Discovery Engine service agent can **invoke the specific
+Reasoning Engine resource** (project-level `roles/aiplatform.user` alone is
+not sufficient — GE returns 401 on the V2 ingress without this):
+
+```bash
+python scripts/grant_permissions.py   # sets project + engine-level IAM
+```
+
+Or manually (replace `ENGINE_ID` from `scripts/deploy_state.json`):
+
+```bash
+ENGINE_ID=<your-reasoning-engine-id>
+PROJECT_NUM=$(gcloud projects describe prj-us-bpg-agentspace-dev-b --format='value(projectNumber)')
+gcloud beta ai reasoning-engines add-iam-policy-binding "$ENGINE_ID" \
+  --location=us-central1 \
   --member="serviceAccount:service-${PROJECT_NUM}@gcp-sa-discoveryengine.iam.gserviceaccount.com" \
   --role="roles/aiplatform.user"
 ```
